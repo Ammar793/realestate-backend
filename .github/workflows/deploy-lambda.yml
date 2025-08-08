@@ -1,0 +1,33 @@
+name: Deploy Lambda
+on: { push: { branches: [ main ] } }
+
+permissions: { id-token: write, contents: read }
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies into package/
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -t package
+
+      - name: Build zip
+        run: |
+          cd package && zip -r ../function.zip . && cd ..
+          zip -g function.zip lambda_function.py
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::642466639437:role/github_role
+          aws-region: us-west-2
+
+      - name: Update Lambda code
+        run: aws lambda update-function-code --function-name selador-realestate-backend --zip-file fileb://function.zip
