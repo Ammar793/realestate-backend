@@ -1,33 +1,77 @@
 name: Deploy Lambda
-on: { push: { branches: [ main ] } }
 
-permissions: { id-token: write, contents: read }
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # for AWS OIDC
+  contents: read
+
+concurrency:
+  group: deploy-lambda
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Install dependencies into package/
+      - name: Build deployment zip (code + optional deps)
         run: |
+          set -euo pipefail
+          rm -rf build function.zip
+          mkdir -p build
+
+          # Optional deps (ok if requirements.txt is empty or missing)
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -t package
+          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
+            pip install -r requirements.txt --target build
+          fi
 
-      - name: Build zip
-        run: |
-          cd package && zip -r ../function.zip . && cd ..
-          zip -g function.zip lambda_function.py
+          # Add your code
+          cp lambda_function.py build/
 
-      - uses: aws-actions/configure-aws-credentials@v4
+          # If you add packages/modules later, include them here:
+          # cp -r my_package build/
+          # cp utils.py build/
+
+          # Zip everything
+          (cd build && zip -r ../function.zip .)
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::642466639437:role/github_role
           aws-region: us-west-2
 
       - name: Update Lambda code
-        run: aws lambda update-function-code --function-name selador-realestate-backend --zip-file fileb://function.zip
+        run: |
+          aws lambda update-function-code \
+            --function-name selador-realestate-backend \
+            --zip-file fileb://function.zip \
+            --publish
+          aws lambda wait function-updated --function-name selador-realestate-backend
+
+      # ----- Optional: use S3 if your zip ever exceeds 50MB -----
+      # - name: Upload zip to S3
+      #   run: aws s3 cp function.zip s3://<your-artifacts-bucket>/lambda/function.zip
+      #
+      # - name: Update Lambda code (from S3)
+      #   run: |
+      #     aws lambda update-function-code \
+      #       --function-name selador-realestate-backend \
+      #       --s3-bucket <your-artifacts-bucket> \
+      #       --s3-key lambda/function.zip \
+      #       --publish
+      #     aws lambda wait function-updated --function-name selador-realestate-backend
