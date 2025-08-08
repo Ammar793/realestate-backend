@@ -91,6 +91,7 @@ def _process_response(resp, original_question):
                 citation_entry = {
                     "id": int(marker),  # Use the actual citation number
                     "source": "Seattle Municipal Code",
+                    "source_link": "https://johnlscott.s3.amazonaws.com/Seattle%20Municipal%20Code.pdf",
                     "page": "See SMC for details",
                     "chunk": "Relevant section",
                     "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
@@ -122,6 +123,102 @@ def _cors_headers():
         "Access-Control-Allow-Methods": "OPTIONS,POST"
     }
 
+
+def _build_reference_numbers(resp):
+    """
+    Assign stable numbers to unique retrieved references across the whole response.
+    Returns (ref_num_map, ordered_refs) where:
+      - ref_num_map maps a retrievedReference 'key' to its number
+      - ordered_refs is a list of {num, source, page, chunk, text}
+    """
+    ref_num_map = {}
+    ordered_refs = []
+    next_num = 1
+
+    if "citations" not in resp:
+        return ref_num_map, ordered_refs
+
+    def ref_key(r):
+        # Build a stable key for a reference
+        meta = r.get("metadata", {})
+        page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
+        chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
+        uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
+              or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
+              or "Knowledge Base Source"
+        return (uri, str(page), str(chunk))
+
+    for c in resp.get("citations", []):
+        for r in c.get("retrievedReferences", []):
+            k = ref_key(r)
+            if k not in ref_num_map:
+                ref_num_map[k] = next_num
+                # materialize a record for the UI
+                uri, page, chunk = k
+                text_obj = r.get("content") or {}
+                snippet = text_obj.get("text") if isinstance(text_obj, dict) else (text_obj or "")
+                ordered_refs.append({
+                    "num": next_num,
+                    "source": uri,
+                    "page": page,
+                    "chunk": chunk,
+                    "text": snippet
+                })
+                next_num += 1
+
+    return ref_num_map, ordered_refs
+
+
+def _inject_inline_citations(resp, answer):
+    """
+    Inserts [n] markers into the answer text based on spans & retrievedReferences.
+    Returns (answer_with_cites, ordered_refs)
+    """
+    if not answer or "citations" not in resp:
+        return answer, []
+
+    ref_num_map, ordered_refs = _build_reference_numbers(resp)
+    if not ref_num_map:
+        return answer, ordered_refs
+
+    # Build a list of insert operations: (pos, "[1][2]")
+    inserts = []
+    for c in resp.get("citations", []):
+        part = c.get("generatedResponsePart", {}).get("textResponsePart", {})
+        span = part.get("span") or {}
+        end = span.get("end")
+        if end is None:
+            continue
+
+        nums = []
+        for r in c.get("retrievedReferences", []):
+            meta = r.get("metadata", {})
+            page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
+            chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
+            uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
+                  or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
+                  or "Knowledge Base Source"
+            key = (uri, str(page), str(chunk))
+            n = ref_num_map.get(key)
+            if n and n not in nums:
+                nums.append(n)
+
+        if nums:
+            inserts.append((int(end), "".join(f"[{n}]" for n in sorted(nums))))
+
+    if not inserts:
+        return answer, ordered_refs
+
+    # Apply inserts from end to start so indices don’t shift
+    inserts.sort(key=lambda x: x[0], reverse=True)
+    out = answer
+    for pos, marker in inserts:
+        if 0 <= pos <= len(out):
+            out = out[:pos] + marker + out[pos:]
+
+    return out, ordered_refs
+
+
 def handler(event, context):
     # Handle CORS preflight
     if event.get("httpMethod") == "OPTIONS":
@@ -145,37 +242,56 @@ def handler(event, context):
 
         # Build RetrieveAndGenerate request
         req = {
-            "input": {"text": f"{question}\n\nContext: {context_text}"},
+            "input": {"text": question},
             "retrieveAndGenerateConfiguration": {
                 "type": "KNOWLEDGE_BASE",
                 "knowledgeBaseConfiguration": {
-                    "knowledgeBaseId": KB_ID,
-                    "modelArn": MODEL_ARN,
-                    "retrievalConfiguration": {
-                        "vectorSearchConfiguration": { "numberOfResults": 5 }
-                    },
-                    "generationConfiguration": {
-                        "promptTemplate": {
-                            "textPromptTemplate": (
-                                "You are a helpful assistant that answers questions about Seattle properties using "
-                                "the Seattle Municipal Code.\n\n"
-                                "User question:\n$query$\n\n"
-                                "Relevant excerpts:\n$search_results$\n\n"
-                                "Instructions:\n"
-                                "- Cite specific SMC sections when possible using numbered citations [1], [2], etc.\n"
-                                "- Include citations inline in your response where you reference specific information.\n"
-                                "- If info is missing, say so.\n"
-                                "- Format your response with proper citations like this: 'According to SMC 23.34.080 [1], the property is zoned...'\n"
-                                "Final answer:"
-                            )
-                        }
+                "knowledgeBaseId": KB_ID,
+                "modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "retrievalConfiguration": {
+                    "vectorSearchConfiguration": { "numberOfResults": 6 }
+                },
+                "generationConfiguration": {
+                    "promptTemplate": {
+                    "textPromptTemplate": (
+                        # REQUIRED tokens:
+                        "$output_format_instructions$\n"
+                        "User question:\n$query$\n\n"
+                        "Property context (not from KB):\n<context>\n"
+                        f"{context_text}\n"
+                        "</context>\n\n"
+                        "Relevant excerpts from the knowledge base:\n$search_results$\n\n"
+                        "Instructions:\n"
+                        "- Cite specific SMC sections with [1], [2], etc.\n"
+                        "- If information is missing, say so.\n"
+                        "Final answer:"
+                    )
                     }
                 }
+                }
             }
-        }
-
+            }
         resp = _bedrock.retrieve_and_generate(**req)
-        result = _process_response(resp, question)
+
+        raw_answer = (resp.get("output") or {}).get("text") or ""
+        answer_with_cites, ordered_refs = _inject_inline_citations(resp, raw_answer)
+
+        result = {
+            "answer": answer_with_cites or f'I found relevant info for: "{question}", but no direct model output was returned.',
+            "citations": [
+                # convert ordered_refs to your existing shape if you want
+                {
+                    "id": r["num"],
+                    "source": r["source"],
+                    "page": r["page"],
+                    "chunk": r["text"],
+                    "text": r["text"]
+                }
+                for r in ordered_refs
+            ],
+            "citation_map": { str(r["num"]): r for r in ordered_refs },
+            "confidence": min(0.95, 0.7 + 0.05 * len(ordered_refs)) if ordered_refs else 0.8
+        }
 
         return {
             "statusCode": 200,
