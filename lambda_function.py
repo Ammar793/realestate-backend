@@ -46,6 +46,18 @@ def _process_response(resp, original_question):
                     citations.append(citation_entry)
                     citation_map[citation_counter] = citation_entry
                     citation_counter += 1
+            else:
+                print("DEBUG: No retrieved references found in citation")  # Debug logging
+                # Try to extract from the generatedResponsePart if available
+                generated_part = c.get("generatedResponsePart", {})
+                if generated_part:
+                    print(f"DEBUG: Found generatedResponsePart: {generated_part}")  # Debug logging
+                    # Look for any reference information in the generated part
+                    text_part = generated_part.get("textResponsePart", {})
+                    if text_part:
+                        span = text_part.get("span", {})
+                        text = text_part.get("text", "")
+                        print(f"DEBUG: Found text response part: span={span}, text={text[:100]}...")  # Debug logging
     else:
         print("DEBUG: No citations found in response structure")  # Debug logging
     
@@ -56,18 +68,17 @@ def _process_response(resp, original_question):
         citation_markers = re.findall(r'\[(\d+)\]', answer)
         if citation_markers:
             print(f"DEBUG: Found citation markers in text: {citation_markers}")  # Debug logging
-            citation_counter = 1
+            # Use the actual citation numbers from the text, not renumber them
             for marker in sorted(set(citation_markers), key=int):
                 citation_entry = {
-                    "id": citation_counter,
+                    "id": int(marker),  # Use the actual citation number
                     "source": "Seattle Municipal Code",
-                    "page": "Unknown",
-                    "chunk": "Unknown",
-                    "text": f"Citation {marker} from Seattle Municipal Code"
+                    "page": "See SMC for details",
+                    "chunk": "Relevant section",
+                    "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
                 }
                 citations.append(citation_entry)
-                citation_map[citation_counter] = citation_entry
-                citation_counter += 1
+                citation_map[int(marker)] = citation_entry  # Use the actual citation number as key
     
     confidence = 0.8
     if citations:
