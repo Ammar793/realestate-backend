@@ -12,26 +12,44 @@ def _process_response(resp, original_question):
     # See response shape: output.text, citations[].retrievedReferences[].metadata, etc.
     # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-agent-runtime/client/retrieve_and_generate.html
     answer = (resp.get("output") or {}).get("text") or ""
-    sources = []
+    citations = []
+    citation_map = {}
+    
     if "citations" in resp:
+        citation_counter = 1
         for c in resp["citations"]:
             for r in c.get("retrievedReferences", []):
                 meta = r.get("metadata", {})
                 page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
-                uri  = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
+                chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
+                uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
                        or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
                        or "Knowledge Base Source"
-                sources.append(f"{uri} (p. {page})")
+                
+                # Create citation entry
+                citation_entry = {
+                    "id": citation_counter,
+                    "source": uri,
+                    "page": page,
+                    "chunk": chunk,
+                    "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
+                }
+                
+                citations.append(citation_entry)
+                citation_map[citation_counter] = citation_entry
+                citation_counter += 1
+    
     confidence = 0.8
-    if sources:
-        confidence = min(0.95, 0.7 + 0.05 * len(sources))
+    if citations:
+        confidence = min(0.95, 0.7 + 0.05 * len(citations))
 
     if not answer:
         answer = f'I found relevant info for: "{original_question}", but no direct model output was returned.'
 
     return {
         "answer": answer,
-        "sources": sources or ["Knowledge Base"],
+        "citations": citations,
+        "citation_map": citation_map,
         "confidence": confidence
     }
 
@@ -82,8 +100,10 @@ def handler(event, context):
                                 "User question:\n$query$\n\n"
                                 "Relevant excerpts:\n$search_results$\n\n"
                                 "Instructions:\n"
-                                "- Cite specific SMC sections when possible.\n"
+                                "- Cite specific SMC sections when possible using numbered citations [1], [2], etc.\n"
+                                "- Include citations inline in your response where you reference specific information.\n"
                                 "- If info is missing, say so.\n"
+                                "- Format your response with proper citations like this: 'According to SMC 23.34.080 [1], the property is zoned...'\n"
                                 "Final answer:"
                             )
                         }
