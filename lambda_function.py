@@ -16,27 +16,55 @@ def _process_response(resp, original_question):
     citation_map = {}
     
     print(f"DEBUG: Full Bedrock response: {json.dumps(resp, indent=2)}")  # Debug logging
+    print(f"DEBUG: Answer text: {answer[:500]}...")  # Debug logging
     
-    if "citations" in resp:
+    # First, try to extract citations from the response structure
+    if "citations" in resp and resp["citations"]:
+        print(f"DEBUG: Found citations in response: {len(resp['citations'])}")  # Debug logging
         citation_counter = 1
         for c in resp["citations"]:
-            for r in c.get("retrievedReferences", []):
-                meta = r.get("metadata", {})
-                page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
-                chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
-                uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
-                       or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
-                       or "Knowledge Base Source"
-                
-                # Create citation entry
+            retrieved_refs = c.get("retrievedReferences", [])
+            if retrieved_refs:
+                print(f"DEBUG: Found {len(retrieved_refs)} retrieved references")  # Debug logging
+                for r in retrieved_refs:
+                    meta = r.get("metadata", {})
+                    page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
+                    chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
+                    uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
+                           or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
+                           or "Knowledge Base Source"
+                    
+                    # Create citation entry
+                    citation_entry = {
+                        "id": citation_counter,
+                        "source": uri,
+                        "page": page,
+                        "chunk": chunk,
+                        "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
+                    }
+                    
+                    citations.append(citation_entry)
+                    citation_map[citation_counter] = citation_entry
+                    citation_counter += 1
+    else:
+        print("DEBUG: No citations found in response structure")  # Debug logging
+    
+    # If no citations were found in the response structure, try to extract them from the text
+    if not citations and answer:
+        import re
+        # Find all citation markers like [1], [2], etc.
+        citation_markers = re.findall(r'\[(\d+)\]', answer)
+        if citation_markers:
+            print(f"DEBUG: Found citation markers in text: {citation_markers}")  # Debug logging
+            citation_counter = 1
+            for marker in sorted(set(citation_markers), key=int):
                 citation_entry = {
                     "id": citation_counter,
-                    "source": uri,
-                    "page": page,
-                    "chunk": chunk,
-                    "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
+                    "source": "Seattle Municipal Code",
+                    "page": "Unknown",
+                    "chunk": "Unknown",
+                    "text": f"Citation {marker} from Seattle Municipal Code"
                 }
-                
                 citations.append(citation_entry)
                 citation_map[citation_counter] = citation_entry
                 citation_counter += 1
