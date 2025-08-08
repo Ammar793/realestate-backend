@@ -15,6 +15,8 @@ def _process_response(resp, original_question):
     citations = []
     citation_map = {}
     
+    print(f"DEBUG: Full Bedrock response: {json.dumps(resp, indent=2)}")  # Debug logging
+    
     if "citations" in resp:
         citation_counter = 1
         for c in resp["citations"]:
@@ -46,12 +48,15 @@ def _process_response(resp, original_question):
     if not answer:
         answer = f'I found relevant info for: "{original_question}", but no direct model output was returned.'
 
-    return {
+    result = {
         "answer": answer,
         "citations": citations,
         "citation_map": citation_map,
         "confidence": confidence
     }
+    
+    print(f"DEBUG: Processed result: {json.dumps(result, indent=2)}")  # Debug logging
+    return result
 
 def _cors_headers():
     return {
