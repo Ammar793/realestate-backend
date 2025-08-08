@@ -34,10 +34,28 @@ def _process_response(resp, original_question):
                            or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
                            or "Knowledge Base Source"
                     
+                    # Clean up the source name and create proper S3 link
+                    source_name = uri
+                    source_link = uri
+                    
+                    # If it's an S3 URI, clean it up and create a proper link
+                    if uri.startswith("s3://johnlscott/"):
+                        # Remove the s3://johnlscott/ prefix
+                        file_name = uri.replace("s3://johnlscott/", "")
+                        source_name = file_name
+                        # Create the proper S3 link
+                        source_link = f"https://johnlscott.s3.amazonaws.com/{file_name}"
+                    elif uri.startswith("s3://"):
+                        # Handle other S3 URIs
+                        file_name = uri.replace("s3://", "")
+                        source_name = file_name
+                        source_link = f"https://{file_name.replace('/', '.s3.amazonaws.com/', 1)}"
+                    
                     # Create citation entry
                     citation_entry = {
                         "id": citation_counter,
-                        "source": uri,
+                        "source": source_name,
+                        "source_link": source_link,
                         "page": page,
                         "chunk": chunk,
                         "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
