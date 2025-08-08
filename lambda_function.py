@@ -62,7 +62,14 @@ def _process_response(resp, original_question):
                     }
                     
                     citations.append(citation_entry)
-                    citation_map[citation_counter] = citation_entry
+                    citation_map[citation_counter] = {
+                        "id": citation_counter,
+                        "source": source_name,
+                        "source_link": source_link,
+                        "page": page,
+                        "chunk": chunk,
+                        "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
+                    }
                     citation_counter += 1
             else:
                 print("DEBUG: No retrieved references found in citation")  # Debug logging
@@ -97,7 +104,14 @@ def _process_response(resp, original_question):
                     "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
                 }
                 citations.append(citation_entry)
-                citation_map[int(marker)] = citation_entry  # Use the actual citation number as key
+                citation_map[int(marker)] = {
+                    "id": int(marker),
+                    "source": "Seattle Municipal Code",
+                    "source_link": "https://johnlscott.s3.amazonaws.com/Seattle%20Municipal%20Code.pdf",
+                    "page": "See SMC for details",
+                    "chunk": "Relevant section",
+                    "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
+                }
     
     confidence = 0.8
     if citations:
@@ -129,7 +143,7 @@ def _build_reference_numbers(resp):
     Assign stable numbers to unique retrieved references across the whole response.
     Returns (ref_num_map, ordered_refs) where:
       - ref_num_map maps a retrievedReference 'key' to its number
-      - ordered_refs is a list of {num, source, page, chunk, text}
+      - ordered_refs is a list of {id, source, source_link, page, chunk, text}
     """
     ref_num_map = {}
     ordered_refs = []
@@ -157,9 +171,28 @@ def _build_reference_numbers(resp):
                 uri, page, chunk = k
                 text_obj = r.get("content") or {}
                 snippet = text_obj.get("text") if isinstance(text_obj, dict) else (text_obj or "")
+                
+                # Clean up the source name and create proper S3 link
+                source_name = uri
+                source_link = uri
+                
+                # If it's an S3 URI, clean it up and create a proper link
+                if uri.startswith("s3://johnlscott/"):
+                    # Remove the s3://johnlscott/ prefix
+                    file_name = uri.replace("s3://johnlscott/", "")
+                    source_name = file_name
+                    # Create the proper S3 link
+                    source_link = f"https://johnlscott.s3.amazonaws.com/{file_name}"
+                elif uri.startswith("s3://"):
+                    # Handle other S3 URIs
+                    file_name = uri.replace("s3://", "")
+                    source_name = file_name
+                    source_link = f"https://{file_name.replace('/', '.s3.amazonaws.com/', 1)}"
+                
                 ordered_refs.append({
-                    "num": next_num,
-                    "source": uri,
+                    "id": next_num,
+                    "source": source_name,
+                    "source_link": source_link,
                     "page": page,
                     "chunk": chunk,
                     "text": snippet
@@ -278,18 +311,8 @@ def handler(event, context):
 
         result = {
             "answer": answer_with_cites or f'I found relevant info for: "{question}", but no direct model output was returned.',
-            "citations": [
-                # convert ordered_refs to your existing shape if you want
-                {
-                    "id": r["num"],
-                    "source": r["source"],
-                    "page": r["page"],
-                    "chunk": r["text"],
-                    "text": r["text"]
-                }
-                for r in ordered_refs
-            ],
-            "citation_map": { str(r["num"]): r for r in ordered_refs },
+            "citations": ordered_refs,  # Now has proper structure with source_link
+            "citation_map": { str(r["id"]): r for r in ordered_refs },
             "confidence": min(0.95, 0.7 + 0.05 * len(ordered_refs)) if ordered_refs else 0.8
         }
 
