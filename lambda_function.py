@@ -72,18 +72,19 @@ def handler(event, context):
                     "knowledgeBaseId": KB_ID,
                     "modelArn": MODEL_ARN,
                     "retrievalConfiguration": {
-                        "vectorSearchConfiguration": {
-                            "numberOfResults": 5
-                        }
+                        "vectorSearchConfiguration": { "numberOfResults": 5 }
                     },
                     "generationConfiguration": {
                         "promptTemplate": {
                             "textPromptTemplate": (
-                                "You are a helpful assistant that provides information about "
-                                "Seattle properties and development regulations based on the Seattle Municipal Code.\n\n"
-                                "Use the retrieved information to answer the user's question. Be specific and cite relevant sections.\n\n"
-                                "Question: {question}\n\nRetrieved Information:\n{retrieved_information}\n\n"
-                                "Answer only based on retrieved information and SMC."
+                                "You are a helpful assistant that answers questions about Seattle properties using "
+                                "the Seattle Municipal Code.\n\n"
+                                "User question:\n$query$\n\n"
+                                "Relevant excerpts:\n$search_results$\n\n"
+                                "Instructions:\n"
+                                "- Cite specific SMC sections when possible.\n"
+                                "- If info is missing, say so.\n"
+                                "Final answer:"
                             )
                         }
                     }
