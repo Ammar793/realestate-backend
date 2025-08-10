@@ -115,7 +115,7 @@ class StrandsAgentOrchestrator:
         
         try:
             # Try to get Cognito authenticator
-            from shared.cognito_auth import create_cognito_authenticator_from_config, create_cognito_authenticator_from_env
+            from cognito_auth import create_cognito_authenticator_from_config, create_cognito_authenticator_from_env
             
             # First try from config, then from environment
             cognito_auth = create_cognito_authenticator_from_config(self.config)
