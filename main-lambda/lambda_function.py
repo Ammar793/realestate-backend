@@ -5,6 +5,7 @@ import asyncio
 import base64
 import logging
 from strands_orchestrator import StrandsAgentOrchestrator
+import time
 
 # Configure logging for Lambda - this ensures logs show up in CloudWatch
 logger = logging.getLogger()
@@ -75,90 +76,95 @@ def _send_websocket_message(connection_id: str, message: dict, domain: str, stag
         logger.error(f"Failed to send WebSocket message to {connection_id}: {e}")
         return False
 
-def _stream_agent_response_websocket(connection_id: str, query: str, context: str, query_type: str, 
-                                   domain: str, stage: str) -> None:
+async def _stream_agent_response_websocket(connection_id: str, query: str, context: str, query_type: str, 
+                                         domain: str, stage: str) -> None:
     """Stream agent response to WebSocket client"""
     try:
         # Send initial status
         _send_websocket_message(connection_id, {
             "type": "status",
             "message": "Processing your query...",
-            "timestamp": asyncio.get_event_loop().time()
+            "timestamp": time.time()
         }, domain, stage)
         
         # Send "thinking" status
         _send_websocket_message(connection_id, {
             "type": "status",
             "message": "Agent is analyzing your request...",
-            "timestamp": asyncio.get_event_loop().time()
+            "timestamp": time.time()
         }, domain, stage)
         
-        # Execute the query asynchronously
-        async def execute_query():
-            try:
-                orchestrator = _get_orchestrator()
-                result = await orchestrator.route_query(query, context, query_type)
+        # Execute the query
+        try:
+            orchestrator = _get_orchestrator()
+            result = await orchestrator.route_query(query, context, query_type)
+            
+            if result.get("success"):
+                # Send the complete result
+                _send_websocket_message(connection_id, {
+                    "type": "result",
+                    "data": result,
+                    "timestamp": time.time()
+                }, domain, stage)
                 
-                if result.get("success"):
-                    # Send the complete result
-                    _send_websocket_message(connection_id, {
-                        "type": "result",
-                        "data": result,
-                        "timestamp": asyncio.get_event_loop().time()
-                    }, domain, stage)
-                    
-                    # Send completion status
-                    _send_websocket_message(connection_id, {
-                        "type": "status",
-                        "message": "Query completed successfully",
-                        "timestamp": asyncio.get_event_loop().time()
-                    }, domain, stage)
-                else:
-                    # Send error result
-                    _send_websocket_message(connection_id, {
-                        "type": "error",
-                        "error": result.get("error", "Unknown error occurred"),
-                        "timestamp": asyncio.get_event_loop().time()
-                    }, domain, stage)
-                    
-            except Exception as e:
-                logger.error(f"Error executing query: {e}")
+                # Send completion status
+                _send_websocket_message(connection_id, {
+                    "type": "status",
+                    "message": "Query completed successfully",
+                    "timestamp": time.time()
+                }, domain, stage)
+            else:
+                # Send error result
                 _send_websocket_message(connection_id, {
                     "type": "error",
-                    "error": f"Failed to execute query: {str(e)}",
-                    "timestamp": asyncio.get_event_loop().time()
+                    "error": result.get("error", "Unknown error occurred"),
+                    "timestamp": time.time()
                 }, domain, stage)
-        
-        # Run the async query execution
-        asyncio.create_task(execute_query())
+                
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            _send_websocket_message(connection_id, {
+                "type": "error",
+                "error": f"Failed to execute query: {str(e)}",
+                "timestamp": time.time()
+            }, domain, stage)
         
     except Exception as e:
         logger.error(f"Error in stream_agent_response_websocket: {e}")
         _send_websocket_message(connection_id, {
             "type": "error",
             "error": f"Failed to start streaming: {str(e)}",
-            "timestamp": asyncio.get_event_loop().time()
+            "timestamp": time.time()
         }, domain, stage)
+
+def _format_websocket_response(status_code: int, body: str) -> dict:
+    """Format WebSocket response to ensure it's valid for API Gateway"""
+    return {
+        "statusCode": int(status_code),
+        "body": str(body)
+    }
 
 def _handle_websocket_connect(event: dict) -> dict:
     """Handle WebSocket connection"""
-    connection_id = event["requestContext"]["connectionId"]
-    logger.info(f"New WebSocket connection: {connection_id}")
-    
-    return {
-        "statusCode": 200,
-        "body": "Connected"
-    }
+    try:
+        connection_id = event["requestContext"]["connectionId"]
+        logger.info(f"New WebSocket connection: {connection_id}")
+        
+        return _format_websocket_response(200, "Connected")
+    except Exception as e:
+        logger.error(f"Error in WebSocket connect: {e}")
+        return _format_websocket_response(500, "Connection failed")
 
 def _handle_websocket_disconnect(event: dict) -> dict:
     """Handle WebSocket disconnection"""
-    connection_id = event["requestContext"]["connectionId"]
-    logger.info(f"WebSocket disconnected: {connection_id}")
-    
-    return {
-        "statusCode": 200,
-        "body": "Disconnected"
-    }
+    try:
+        connection_id = event["requestContext"]["connectionId"]
+        logger.info(f"WebSocket disconnected: {connection_id}")
+        
+        return _format_websocket_response(200, "Disconnected")
+    except Exception as e:
+        logger.error(f"Error in WebSocket disconnect: {e}")
+        return _format_websocket_response(500, "Disconnect failed")
 
 def _handle_websocket_invoke(event: dict) -> dict:
     """Handle invoke action from WebSocket client"""
@@ -178,37 +184,30 @@ def _handle_websocket_invoke(event: dict) -> dict:
         query_type = body.get("query_type", "general")
         
         if not query:
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "Question is required"})
-            }
+            return _format_websocket_response(400, "Question is required")
         
         logger.info(f"Processing WebSocket invoke request: connection_id={connection_id}, query_length={len(query)}")
         
-        # Start streaming the response
-        _stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage)
+        # Start streaming the response asynchronously
+        # Note: This runs in the background and doesn't block the response
+        asyncio.create_task(_stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage))
         
-        return {
-            "statusCode": 200,
-            "body": json.dumps({"message": "Query processing started", "connection_id": connection_id})
-        }
+        return _format_websocket_response(200, "Query processing started")
         
     except Exception as e:
         logger.error(f"Error handling WebSocket invoke: {e}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": f"Failed to process invoke: {str(e)}"})
-        }
+        return _format_websocket_response(500, f"Failed to process invoke: {str(e)}")
 
 def _handle_websocket_default(event: dict) -> dict:
     """Handle default/unrecognized WebSocket actions"""
-    connection_id = event["requestContext"]["connectionId"]
-    logger.warning(f"Unrecognized WebSocket action for connection {connection_id}")
-    
-    return {
-        "statusCode": 400,
-        "body": json.dumps({"error": "Unrecognized action"})
-    }
+    try:
+        connection_id = event["requestContext"]["connectionId"]
+        logger.warning(f"Unrecognized WebSocket action for connection {connection_id}")
+        
+        return _format_websocket_response(400, "Unrecognized action")
+    except Exception as e:
+        logger.error(f"Error in WebSocket default handler: {e}")
+        return _format_websocket_response(500, "Handler error")
 
 
 def _build_reference_numbers(resp):
@@ -580,16 +579,29 @@ def handler(event, context):
             
             route_key = event["requestContext"]["routeKey"]
             logger.info(f"WebSocket route: {route_key}")
+            logger.info(f"WebSocket event structure: {json.dumps(event.get('requestContext', {}), default=str)}")
             
             # Route to appropriate WebSocket handler
             if route_key == "$connect":
-                return _handle_websocket_connect(event)
+                logger.info("Handling WebSocket connect event")
+                result = _handle_websocket_connect(event)
+                logger.info(f"WebSocket connect result: {result}")
+                return result
             elif route_key == "$disconnect":
-                return _handle_websocket_disconnect(event)
+                logger.info("Handling WebSocket disconnect event")
+                result = _handle_websocket_disconnect(event)
+                logger.info(f"WebSocket disconnect result: {result}")
+                return result
             elif route_key == "invoke":
-                return _handle_websocket_invoke(event)
+                logger.info("Handling WebSocket invoke event")
+                result = _handle_websocket_invoke(event)
+                logger.info(f"WebSocket invoke result: {result}")
+                return result
             else:
-                return _handle_websocket_default(event)
+                logger.info(f"Handling WebSocket default event for route: {route_key}")
+                result = _handle_websocket_default(event)
+                logger.info(f"WebSocket default result: {result}")
+                return result
         else:
             logger.info("Request identified as default HTTP request")
             print(f"=== USING DEFAULT HTTP PATH ===")
