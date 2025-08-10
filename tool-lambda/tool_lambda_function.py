@@ -2,9 +2,6 @@ import json
 import os
 import boto3
 import asyncio
-from strands_orchestrator import StrandsAgentOrchestrator
-
-# Now import the rest of your code
 
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
@@ -14,13 +11,6 @@ MODEL_ARN = os.environ["MODEL_ARN"]
 
 # Initialize agent orchestrator
 _orchestrator = None
-
-def _get_orchestrator():
-    """Get or create the Strands agent orchestrator instance"""
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = StrandsAgentOrchestrator()
-    return _orchestrator
 
 def _cors_headers():
     return {
