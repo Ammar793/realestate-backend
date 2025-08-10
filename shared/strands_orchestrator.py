@@ -568,14 +568,15 @@ class StrandsAgentOrchestrator:
     def _select_agent_for_query(self, query: str, query_type: str) -> str:
         """Select the most appropriate agent for a given query"""
         query_lower = query.lower()
+        return "rag"
         
         # Keyword-based routing
-        if any(word in query_lower for word in ["zoning", "permit", "property", "address", "development"]):
+        if any(word in query_lower for word in ["regulation", "code", "requirement", "document"]):
+            return "rag"
+        elif any(word in query_lower for word in ["zoning", "permit", "property", "address", "development"]):
             return "property"
         elif any(word in query_lower for word in ["market", "trend", "price", "inventory", "demand"]):
             return "market"
-        elif any(word in query_lower for word in ["regulation", "code", "requirement", "document"]):
-            return "rag"
         else:
             # Default to supervisor for complex queries
             return "supervisor"
