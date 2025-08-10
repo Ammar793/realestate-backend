@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Tool Lambda Function for Selador Real Estate Backend'
+
+Parameters:
+  LambdaFunctionName:
+    Type: String
+    Default: 'selador-realestate-tools'
+    Description: 'Name of the tool lambda function'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+Resources:
+  ToolLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName
+      Runtime: python3.12
+      Handler: tool_lambda_function.handler
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Tool lambda placeholder - deploy actual code via CI/CD'
+              }
+      Role: !GetAtt ToolLambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          AWS_REGION: !Ref AWS::Region
+          KNOWLEDGE_BASE_ID: '{{KNOWLEDGE_BASE_ID}}'  # Replace with actual value
+          MODEL_ARN: '{{MODEL_ARN}}'  # Replace with actual value
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'Tool execution for real estate backend'
+
+  ToolLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${LambdaFunctionName}-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ToolLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:RetrieveAndGenerate
+                  - bedrock:InvokeModel
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  ToolLambdaApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${LambdaFunctionName}-api'
+      Description: 'API Gateway for tool lambda function'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ToolLambdaResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ToolLambdaApiGateway
+      ParentId: !GetAtt ToolLambdaApiGateway.RootResourceId
+      PathPart: 'tools'
+
+  ToolLambdaMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToolLambdaApiGateway
+      ResourceId: !Ref ToolLambdaResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ToolLambdaFunction.Arn}/invocations'
+
+  ToolLambdaOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ToolLambdaApiGateway
+      ResourceId: !Ref ToolLambdaResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Responses:
+          default:
+            StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+  ToolLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ToolLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ToolLambdaApiGateway}/*/*'
+
+Outputs:
+  ToolLambdaFunctionArn:
+    Description: 'ARN of the tool lambda function'
+    Value: !GetAtt ToolLambdaFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ToolLambdaArn'
+
+  ToolLambdaFunctionName:
+    Description: 'Name of the tool lambda function'
+    Value: !Ref ToolLambdaFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-ToolLambdaName'
+
+  ToolLambdaApiGatewayUrl:
+    Description: 'URL of the tool lambda API Gateway'
+    Value: !Sub 'https://${ToolLambdaApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/tools'
+    Export:
+      Name: !Sub '${AWS::StackName}-ToolLambdaApiUrl' 

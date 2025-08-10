@@ -1,4 +1,4 @@
-name: Deploy Lambda
+name: Deploy Lambda Functions
 
 on:
   push:
@@ -27,27 +27,45 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Build deployment zip (code + optional deps)
+      - name: Build main lambda deployment zip
         run: |
           set -euo pipefail
-          rm -rf build function.zip
-          mkdir -p build
+          rm -rf build-main function-main.zip
+          mkdir -p build-main
 
-          # Optional deps (ok if requirements.txt is empty or missing)
+          # Install dependencies
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
-            pip install -r requirements.txt --target build
+          if [ -f main-lambda/requirements.txt ] && [ -s main-lambda/requirements.txt ]; then
+            pip install -r main-lambda/requirements.txt --target build-main
           fi
 
-          # Add your code
-          cp lambda_function.py build/
-
-          # If you add packages/modules later, include them here:
-          # cp -r my_package build/
-          # cp utils.py build/
+          # Add main lambda code
+          cp main-lambda/lambda_function.py build-main/
+          cp shared/strands_orchestrator.py build-main/
+          cp -r shared/agents/ build-main/
 
           # Zip everything
-          (cd build && zip -r ../function.zip .)
+          (cd build-main && zip -r ../function-main.zip .)
+
+      - name: Build tool lambda deployment zip
+        run: |
+          set -euo pipefail
+          rm -rf build-tool function-tool.zip
+          mkdir -p build-tool
+
+          # Install dependencies
+          python -m pip install --upgrade pip
+          if [ -f tool-lambda/requirements.txt ] && [ -s tool-lambda/requirements.txt ]; then
+            pip install -r tool-lambda/requirements.txt --target build-tool
+          fi
+
+          # Add tool lambda code
+          cp tool-lambda/tool_lambda_function.py build-tool/
+          cp shared/strands_orchestrator.py build-tool/
+          cp -r shared/agents/ build-tool/
+
+          # Zip everything
+          (cd build-tool && zip -r ../function-tool.zip .)
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -55,23 +73,79 @@ jobs:
           role-to-assume: arn:aws:iam::642466639437:role/github_role
           aws-region: us-west-2
 
-      - name: Update Lambda code
+      - name: Update main lambda code
         run: |
           aws lambda update-function-code \
             --function-name selador-realestate-backend \
-            --zip-file fileb://function.zip \
+            --zip-file fileb://function-main.zip \
             --publish
           aws lambda wait function-updated --function-name selador-realestate-backend
 
+      - name: Update main lambda environment variables
+        run: |
+          aws lambda update-function-configuration \
+            --function-name selador-realestate-backend \
+            --environment Variables='{
+              "AWS_REGION": "${{ vars.AWS_REGION || 'us-west-2' }}",
+              "KNOWLEDGE_BASE_ID": "${{ vars.KNOWLEDGE_BASE_ID }}",
+              "MODEL_ARN": "${{ vars.MODEL_ARN }}",
+              "GATEWAY_NAME": "${{ vars.GATEWAY_NAME || 'JLSRealEstateGateway' }}",
+              "AGENT_LOG_LEVEL": "${{ vars.AGENT_LOG_LEVEL || 'INFO' }}",
+              "AGENT_TIMEOUT": "${{ vars.AGENT_TIMEOUT || '30' }}",
+              "AGENT_MAX_RETRIES": "${{ vars.AGENT_MAX_RETRIES || '3' }}",
+              "WORKFLOW_PARALLEL_LIMIT": "${{ vars.WORKFLOW_PARALLEL_LIMIT || '5' }}",
+              "WORKFLOW_TIMEOUT": "${{ vars.WORKFLOW_TIMEOUT || '120' }}",
+              "API_RATE_LIMIT": "${{ vars.API_RATE_LIMIT || '100' }}",
+              "API_TIMEOUT": "${{ vars.API_TIMEOUT || '30' }}",
+              "LOG_LEVEL": "${{ vars.LOG_LEVEL || 'INFO' }}",
+              "LOG_FORMAT": "${{ vars.LOG_FORMAT || 'json' }}",
+              "LOG_DESTINATION": "${{ vars.LOG_DESTINATION || 'cloudwatch' }}"
+            }'
+
+      - name: Update tool lambda code
+        run: |
+          aws lambda update-function-code \
+            --function-name selador-realestate-tools \
+            --zip-file fileb://function-tool.zip \
+            --publish
+          aws lambda wait function-updated --function-name selador-realestate-tools
+
+      - name: Update tool lambda environment variables
+        run: |
+          aws lambda update-function-configuration \
+            --function-name selador-realestate-tools \
+            --environment Variables='{
+              "AWS_REGION": "${{ vars.AWS_REGION || 'us-west-2' }}",
+              "KNOWLEDGE_BASE_ID": "${{ vars.KNOWLEDGE_BASE_ID }}",
+              "MODEL_LEVEL": "${{ vars.MODEL_ARN }}",
+              "GATEWAY_NAME": "${{ vars.GATEWAY_NAME || 'JLSRealEstateGateway' }}",
+              "AGENT_LOG_LEVEL": "${{ vars.AGENT_LOG_LEVEL || 'INFO' }}",
+              "AGENT_TIMEOUT": "${{ vars.AGENT_TIMEOUT || '30' }}",
+              "WORKFLOW_PARALLEL_LIMIT": "${{ vars.WORKFLOW_PARALLEL_LIMIT || '5' }}",
+              "WORKFLOW_TIMEOUT": "${{ vars.WORKFLOW_TIMEOUT || '120' }}",
+              "LOG_LEVEL": "${{ vars.LOG_LEVEL || 'INFO' }}",
+              "LOG_FORMAT": "${{ vars.LOG_FORMAT || 'json' }}",
+              "LOG_DESTINATION": "${{ vars.LOG_DESTINATION || 'cloudwatch' }}"
+            }'
+
       # ----- Optional: use S3 if your zip ever exceeds 50MB -----
-      # - name: Upload zip to S3
-      #   run: aws s3 cp function.zip s3://<your-artifacts-bucket>/lambda/function.zip
+      # - name: Upload zips to S3
+      #   run: |
+      #     aws s3 cp function-main.zip s3://<your-artifacts-bucket>/lambda/main-function.zip
+      #     aws s3 cp function-tool.zip s3://<your-artifacts-bucket>/lambda/tool-function.zip
       #
       # - name: Update Lambda code (from S3)
       #   run: |
       #     aws lambda update-function-code \
       #       --function-name selador-realestate-backend \
       #       --s3-bucket <your-artifacts-bucket> \
-      #       --s3-key lambda/function.zip \
+      #       --s3-key lambda/main-function.zip \
       #       --publish
       #     aws lambda wait function-updated --function-name selador-realestate-backend
+      #     
+      #     aws lambda update-function-code \
+      #       --function-name selador-realestate-tools \
+      #       --s3-bucket <your-artifacts-bucket> \
+      #       --s3-key lambda/tool-function.zip \
+      #       --publish
+      #     aws lambda wait function-updated --function-name selador-realestate-tools

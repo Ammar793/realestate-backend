@@ -1,0 +1,15 @@
+{
+  "gateway_id": "your-gateway-id-here",
+  "gateway_url": "https://your-gateway-url.amazonaws.com",
+  "target_id": "your-target-id-here",
+  "cognito_client_info": {
+    "client_id": "your-cognito-client-id",
+    "client_secret": "your-cognito-client-secret",
+    "user_pool_id": "your-user-pool-id",
+    "identity_pool_id": "your-identity-pool-id"
+  },
+  "access_token": "your-access-token-here",
+  "region": "us-west-2",
+  "gateway_name": "JLSRealEstateGateway",
+  "lambda_arn": "arn:aws:lambda:us-west-2:123456789012:function:your-lambda-function-name"
+} 

@@ -1,6 +1,8 @@
 import json
 import os
 import boto3
+import asyncio
+from shared.strands_orchestrator import StrandsAgentOrchestrator
 
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
@@ -8,127 +10,15 @@ _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS
 KB_ID = os.environ["KNOWLEDGE_BASE_ID"]
 MODEL_ARN = os.environ["MODEL_ARN"]  # e.g., arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0
 
-def _process_response(resp, original_question):
-    # See response shape: output.text, citations[].retrievedReferences[].metadata, etc.
-    # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-agent-runtime/client/retrieve_and_generate.html
-    answer = (resp.get("output") or {}).get("text") or ""
-    citations = []
-    citation_map = {}
-    
-    print(f"DEBUG: Full Bedrock response: {json.dumps(resp, indent=2)}")  # Debug logging
-    print(f"DEBUG: Answer text: {answer[:500]}...")  # Debug logging
-    
-    # First, try to extract citations from the response structure
-    if "citations" in resp and resp["citations"]:
-        print(f"DEBUG: Found citations in response: {len(resp['citations'])}")  # Debug logging
-        citation_counter = 1
-        for c in resp["citations"]:
-            retrieved_refs = c.get("retrievedReferences", [])
-            if retrieved_refs:
-                print(f"DEBUG: Found {len(retrieved_refs)} retrieved references")  # Debug logging
-                for r in retrieved_refs:
-                    meta = r.get("metadata", {})
-                    page = meta.get("x-amz-bedrock-kb-document-page-number", "Unknown")
-                    chunk = meta.get("x-amz-bedrock-kb-document-chunk", "Unknown")
-                    uri = (r.get("location", {}).get("webLocation", {}) or {}).get("url") \
-                           or (r.get("location", {}).get("s3Location", {}) or {}).get("uri") \
-                           or "Knowledge Base Source"
-                    
-                    # Clean up the source name and create proper S3 link
-                    source_name = uri
-                    source_link = uri
-                    
-                    # If it's an S3 URI, clean it up and create a proper link
-                    if uri.startswith("s3://johnlscott/"):
-                        # Remove the s3://johnlscott/ prefix
-                        file_name = uri.replace("s3://johnlscott/", "")
-                        source_name = file_name
-                        # Create the proper S3 link
-                        source_link = f"https://johnlscott.s3.amazonaws.com/{file_name}"
-                    elif uri.startswith("s3://"):
-                        # Handle other S3 URIs
-                        file_name = uri.replace("s3://", "")
-                        source_name = file_name
-                        source_link = f"https://{file_name.replace('/', '.s3.amazonaws.com/', 1)}"
-                    
-                    # Create citation entry
-                    citation_entry = {
-                        "id": citation_counter,
-                        "source": source_name,
-                        "source_link": source_link,
-                        "page": page,
-                        "chunk": chunk,
-                        "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
-                    }
-                    
-                    citations.append(citation_entry)
-                    citation_map[citation_counter] = {
-                        "id": citation_counter,
-                        "source": source_name,
-                        "source_link": source_link,
-                        "page": page,
-                        "chunk": chunk,
-                        "text": r.get("content", "")[:200] + "..." if len(r.get("content", "")) > 200 else r.get("content", "")
-                    }
-                    citation_counter += 1
-            else:
-                print("DEBUG: No retrieved references found in citation")  # Debug logging
-                # Try to extract from the generatedResponsePart if available
-                generated_part = c.get("generatedResponsePart", {})
-                if generated_part:
-                    print(f"DEBUG: Found generatedResponsePart: {generated_part}")  # Debug logging
-                    # Look for any reference information in the generated part
-                    text_part = generated_part.get("textResponsePart", {})
-                    if text_part:
-                        span = text_part.get("span", {})
-                        text = text_part.get("text", "")
-                        print(f"DEBUG: Found text response part: span={span}, text={text[:100]}...")  # Debug logging
-    else:
-        print("DEBUG: No citations found in response structure")  # Debug logging
-    
-    # If no citations were found in the response structure, try to extract them from the text
-    if not citations and answer:
-        import re
-        # Find all citation markers like [1], [2], etc.
-        citation_markers = re.findall(r'\[(\d+)\]', answer)
-        if citation_markers:
-            print(f"DEBUG: Found citation markers in text: {citation_markers}")  # Debug logging
-            # Use the actual citation numbers from the text, not renumber them
-            for marker in sorted(set(citation_markers), key=int):
-                citation_entry = {
-                    "id": int(marker),  # Use the actual citation number
-                    "source": "Seattle Municipal Code",
-                    "source_link": "https://johnlscott.s3.amazonaws.com/Seattle%20Municipal%20Code.pdf",
-                    "page": "See SMC for details",
-                    "chunk": "Relevant section",
-                    "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
-                }
-                citations.append(citation_entry)
-                citation_map[int(marker)] = {
-                    "id": int(marker),
-                    "source": "Seattle Municipal Code",
-                    "source_link": "https://johnlscott.s3.amazonaws.com/Seattle%20Municipal%20Code.pdf",
-                    "page": "See SMC for details",
-                    "chunk": "Relevant section",
-                    "text": f"Citation {marker} from Seattle Municipal Code - Referenced in AI response"
-                }
-    
-    confidence = 0.8
-    if citations:
-        confidence = min(0.95, 0.7 + 0.05 * len(citations))
+# Initialize agent orchestrator
+_orchestrator = None
 
-    if not answer:
-        answer = f'I found relevant info for: "{original_question}", but no direct model output was returned.'
-
-    result = {
-        "answer": answer,
-        "citations": citations,
-        "citation_map": citation_map,
-        "confidence": confidence
-    }
-    
-    print(f"DEBUG: Processed result: {json.dumps(result, indent=2)}")  # Debug logging
-    return result
+def _get_orchestrator():
+    """Get or create the Strands agent orchestrator instance"""
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = StrandsAgentOrchestrator()
+    return _orchestrator
 
 def _cors_headers():
     return {
@@ -194,7 +84,7 @@ def _build_reference_numbers(resp):
                     "source": source_name,
                     "source_link": source_link,
                     "page": page,
-                    "chunk": chunk,
+                    "chunk": snippet,
                     "text": snippet
                 })
                 next_num += 1
@@ -252,6 +142,85 @@ def _inject_inline_citations(resp, answer):
     return out, ordered_refs
 
 
+async def _handle_agent_query(body: dict) -> dict:
+    """Handle queries using the multi-agent system"""
+    try:
+        query = body.get("question", "")
+        context_text = body.get("context", "")
+        query_type = body.get("query_type", "general")
+        
+        if not query:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Question is required for agent queries"})
+            }
+        
+        # Route query through Strands agent orchestrator
+        orchestrator = _get_orchestrator()
+        result = await orchestrator.route_query(query, context_text, query_type)
+        
+        return {
+            "statusCode": 200,
+            "headers": {**_cors_headers(), "Content-Type": "application/json"},
+            "body": json.dumps(result)
+        }
+        
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Failed to process agent query", "details": str(e)})
+        }
+
+async def _handle_tool_execution(body: dict) -> dict:
+    """Handle direct tool execution requests by forwarding to tool lambda"""
+    try:
+        # Forward tool execution requests to the dedicated tool lambda
+        # This lambda now only handles agent queries and workflows
+        return {
+            "statusCode": 400,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Tool execution has been moved to a separate lambda. Please use the tool lambda endpoint."})
+        }
+        
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Failed to process tool request", "details": str(e)})
+        }
+
+
+
+async def _handle_workflow_execution(body: dict) -> dict:
+    """Handle workflow execution requests"""
+    try:
+        workflow_name = body.get("workflow")
+        parameters = body.get("parameters", {})
+        
+        if not workflow_name:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Workflow name is required"})
+            }
+        
+        # Execute workflow through Strands agent orchestrator
+        orchestrator = _get_orchestrator()
+        result = await orchestrator.execute_workflow(workflow_name, parameters)
+        
+        return {
+            "statusCode": 200,
+            "headers": {**_cors_headers(), "Content-Type": "application/json"},
+            "body": json.dumps(result)
+        }
+        
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Failed to execute workflow", "details": str(e)})
+        }
+
 def handler(event, context):
     # Handle CORS preflight
     if event.get("httpMethod") == "OPTIONS":
@@ -260,10 +229,24 @@ def handler(event, context):
     try:
         body = event.get("body") or "{}"
         if event.get("isBase64Encoded"):
+            import base64
             body = json.loads(base64.b64decode(body))
         else:
             body = json.loads(body)
 
+        # Check if this is an agent query or workflow execution
+        if body.get("use_agents") or body.get("workflow"):
+            # Use the Strands multi-agent system with AgentCore Gateway
+            if body.get("workflow"):
+                return asyncio.run(_handle_workflow_execution(body))
+            else:
+                return asyncio.run(_handle_agent_query(body))
+        
+        # Check if this is a direct tool execution request
+        if body.get("tool_name"):
+            return asyncio.run(_handle_tool_execution(body))
+        
+        # Fall back to original Bedrock knowledge base approach
         question = body.get("question")
         context_text = body.get("context")
         if not question or not context_text:
@@ -326,5 +309,5 @@ def handler(event, context):
         return {
             "statusCode": 500,
             "headers": _cors_headers(),
-            "body": json.dumps({"error": "Failed to query Bedrock knowledge base", "details": str(e)})
+            "body": json.dumps({"error": "Failed to process request", "details": str(e)})
         }
