@@ -500,7 +500,25 @@ class StrandsAgentOrchestrator:
                     logger.info(f"Response as string: {content}")
                 
                 # Check for tools used
-                tools_used = getattr(response, 'tools_used', 0)
+                tools_used = 0
+                if hasattr(response, 'metrics') and response.metrics:
+                    # Extract tool count from metrics
+                    if hasattr(response.metrics, 'tool_metrics') and response.metrics.tool_metrics:
+                        # Count the number of unique tools used
+                        tools_used = len(response.metrics.tool_metrics)
+                        logger.info(f"Found {tools_used} unique tools used in metrics")
+                        
+                        # Log detailed tool usage for debugging
+                        for tool_name, tool_metric in response.metrics.tool_metrics.items():
+                            if hasattr(tool_metric, 'call_count'):
+                                logger.info(f"Tool {tool_name}: {tool_metric.call_count} calls")
+                            else:
+                                logger.info(f"Tool {tool_name}: no call count available")
+                    else:
+                        logger.info("No tool_metrics found in response metrics")
+                else:
+                    logger.info("No metrics found in response")
+                
                 logger.info(f"Tools used in execution: {tools_used}")
                 
                 # Check for other response attributes
@@ -630,6 +648,28 @@ class StrandsAgentOrchestrator:
                     response = agent(action_prompt)
                     logger.info("Agent action execution completed normally")
                 
+                # Check for tools used
+                tools_used = 0
+                if hasattr(response, 'metrics') and response.metrics:
+                    # Extract tool count from metrics
+                    if hasattr(response.metrics, 'tool_metrics') and response.metrics.tool_metrics:
+                        # Count the number of unique tools used
+                        tools_used = len(response.metrics.tool_metrics)
+                        logger.info(f"Found {tools_used} unique tools used in metrics")
+                        
+                        # Log detailed tool usage for debugging
+                        for tool_name, tool_metric in response.metrics.tool_metrics.items():
+                            if hasattr(tool_metric, 'call_count'):
+                                logger.info(f"Tool {tool_name}: {tool_metric.call_count} calls")
+                            else:
+                                logger.info(f"Tool {tool_name}: no call count available")
+                    else:
+                        logger.info("No tool_metrics found in response metrics")
+                else:
+                    logger.info("No metrics found in response")
+                
+                logger.info(f"Tools used in execution: {tools_used}")
+                
                 return {
                     "success": True,
                     "content": response.content if hasattr(response, 'content') else str(response),
@@ -637,7 +677,7 @@ class StrandsAgentOrchestrator:
                     "action": action,
                     "parameters": parameters,
                     "tools_available": len(self.agent_tools.get(agent.name, [])),
-                    "tools_used": getattr(response, 'tools_used', 0)
+                    "tools_used": tools_used
                 }
                 
             except Exception as agent_error:
