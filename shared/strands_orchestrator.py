@@ -194,6 +194,16 @@ class StrandsAgentOrchestrator:
             logger.info("Loading tools from gateway...")
             self._load_gateway_tools()
             
+            # Validate MCP client after loading tools
+            if self.mcp_client:
+                logger.info("Validating MCP client after tool loading...")
+                validation_result = self.test_mcp_client_connection()
+                logger.info(f"MCP client validation result: {validation_result}")
+                
+                if validation_result["status"] != "success":
+                    logger.error(f"MCP client validation failed: {validation_result}")
+                    raise Exception(f"MCP client validation failed: {validation_result['message']}")
+            
             # Add tools to agents
             logger.info("Distributing tools to agents...")
             self._distribute_tools_to_agents()
@@ -268,6 +278,16 @@ class StrandsAgentOrchestrator:
             "market_analysis": ["market", "supervisor"]
         }
         
+        # Also add reverse mapping for debugging
+        reverse_tool_mapping = {}
+        for mapping_key, agents in tool_mapping.items():
+            for agent in agents:
+                if agent not in reverse_tool_mapping:
+                    reverse_tool_mapping[agent] = []
+                reverse_tool_mapping[agent].append(mapping_key)
+        
+        logger.info(f"Reverse tool mapping: {reverse_tool_mapping}")
+        
         logger.info(f"Tool mapping: {tool_mapping}")
         logger.info(f"Tool mapping keys: {list(tool_mapping.keys())}")
         
@@ -287,16 +307,25 @@ class StrandsAgentOrchestrator:
                     
                     # Find which agents should have this tool using partial matching
                     target_agents = ["supervisor"]  # Default to supervisor
+                    matched_key = None
+                    
                     for mapping_key, agents in tool_mapping.items():
                         if mapping_key in tool_name:
                             target_agents = agents
+                            matched_key = mapping_key
                             logger.info(f"Tool {tool_name} matches mapping key '{mapping_key}' -> targets agents: {target_agents}")
                             break
                     
-                    logger.info(f"Tool {tool_name} targets agents: {target_agents}")
+                    if matched_key:
+                        logger.info(f"Tool {tool_name} matched with key '{matched_key}' -> targets agents: {target_agents}")
+                    else:
+                        logger.info(f"Tool {tool_name} did not match any mapping key, defaulting to supervisor")
+                    
                     if agent_name in target_agents:
                         agent_tools.append(tool)
                         logger.info(f"Added tool {tool_name} to agent {agent_name}")
+                    else:
+                        logger.info(f"Agent {agent_name} not in target agents {target_agents} for tool {tool_name}")
                 
                 logger.info(f"Agent {agent_name} will have {len(agent_tools)} tools")
                 
@@ -399,7 +428,64 @@ class StrandsAgentOrchestrator:
             # Execute the agent - it now has tools and can execute them directly
             try:
                 logger.info(f"Calling agent.invoke() with query...")
-                response = target_agent(full_query)
+                
+                # If the agent has tools, execute within MCP client context
+                if agent_tools_count > 0 and self.mcp_client:
+                    logger.info(f"Agent has {agent_tools_count} tools, executing within MCP client context")
+                    
+                    # Ensure MCP client is healthy before execution
+                    if not self.ensure_mcp_client_context():
+                        logger.error("Failed to ensure healthy MCP client context")
+                        return {
+                            "success": False,
+                            "error": "MCP client is not in a healthy state",
+                            "agent": target_agent_name,
+                            "query_type": query_type
+                        }
+                    
+                    try:
+                        with self.mcp_client:
+                            logger.info("MCP client context entered for agent execution")
+                            response = target_agent(full_query)
+                            logger.info("Agent execution completed within MCP context")
+                    except Exception as mcp_error:
+                        logger.error(f"MCP client context error: {mcp_error}")
+                        logger.error(f"MCP error type: {type(mcp_error)}")
+                        logger.error(f"MCP error details: {str(mcp_error)}")
+                        
+                        # Check for specific MCP client errors
+                        if "MCPClientInitializationError" in str(type(mcp_error)) or "client session is not running" in str(mcp_error):
+                            logger.error("Detected MCP client session issue - attempting to reinitialize")
+                            # Try to reinitialize the MCP client
+                            try:
+                                self._setup_agentcore_gateway()
+                                if self.mcp_client:
+                                    logger.info("MCP client reinitialized, retrying agent execution")
+                                    with self.mcp_client:
+                                        response = target_agent(full_query)
+                                        logger.info("Agent execution completed after MCP client reinitialization")
+                                    return {
+                                        "success": True,
+                                        "content": response.content if hasattr(response, 'content') else str(response),
+                                        "agent": target_agent_name,
+                                        "query_type": query_type,
+                                        "tools_available": agent_tools_count,
+                                        "tools_used": getattr(response, 'tools_used', 0),
+                                        "selected_agent": target_agent_name,
+                                        "response_type": str(type(response)),
+                                        "note": "MCP client was reinitialized during execution"
+                                    }
+                            except Exception as reinit_error:
+                                logger.error(f"Failed to reinitialize MCP client: {reinit_error}")
+                        
+                        import traceback
+                        logger.error(f"MCP error traceback: {traceback.format_exc()}")
+                        raise mcp_error
+                else:
+                    logger.info("Agent has no tools or no MCP client, executing normally")
+                    response = target_agent(full_query)
+                    logger.info("Agent execution completed normally")
+                
                 logger.info(f"Agent execution completed successfully")
                 logger.info(f"Response type: {type(response)}")
                 logger.info(f"Response attributes: {dir(response)}")
@@ -512,7 +598,37 @@ class StrandsAgentOrchestrator:
             
             # Execute the agent - it now has tools and can execute them directly
             try:
-                response = agent(action_prompt)
+                # Check if agent has tools and execute within MCP context if needed
+                agent_tools_count = len(self.agent_tools.get(agent.name, []))
+                
+                if agent_tools_count > 0 and self.mcp_client:
+                    logger.info(f"Agent {agent.name} has {agent_tools_count} tools, executing within MCP client context")
+                    
+                    # Ensure MCP client is healthy before execution
+                    if not self.ensure_mcp_client_context():
+                        logger.error("Failed to ensure healthy MCP client context for agent action")
+                        return {
+                            "success": False,
+                            "error": "MCP client is not in a healthy state",
+                            "agent": agent.name,
+                            "action": action
+                        }
+                    
+                    try:
+                        with self.mcp_client:
+                            logger.info("MCP client context entered for agent action execution")
+                            response = agent(action_prompt)
+                            logger.info("Agent action execution completed within MCP context")
+                    except Exception as mcp_error:
+                        logger.error(f"MCP client context error: {mcp_error}")
+                        logger.error(f"MCP error type: {type(mcp_error)}")
+                        import traceback
+                        logger.error(f"MCP error traceback: {traceback.format_exc()}")
+                        raise mcp_error
+                else:
+                    logger.info(f"Agent {agent.name} has no tools or no MCP client, executing normally")
+                    response = agent(action_prompt)
+                    logger.info("Agent action execution completed normally")
                 
                 return {
                     "success": True,
@@ -670,8 +786,60 @@ class StrandsAgentOrchestrator:
             "gateway_tools": [tool.tool_name for tool in self.gateway_tools],
             "agent_tools": {agent: [tool.tool_name for tool in tools] for agent, tools in self.agent_tools.items()},
             "config_keys": list(self.config.keys()) if self.config else [],
-            "mcp_client_type": str(type(self.mcp_client)) if self.mcp_client else "None"
+            "mcp_client_type": str(type(self.mcp_client)) if self.mcp_client else "None",
+            "mcp_client_status": "connected" if self.mcp_client else "disconnected"
         }
+    
+    def test_mcp_client_connection(self) -> Dict[str, Any]:
+        """Test the MCP client connection and return status"""
+        if not self.mcp_client:
+            return {"status": "error", "message": "No MCP client available"}
+        
+        try:
+            # Try to enter the MCP client context
+            with self.mcp_client:
+                logger.info("MCP client context test successful")
+                return {
+                    "status": "success", 
+                    "message": "MCP client context working correctly",
+                    "client_type": str(type(self.mcp_client))
+                }
+        except Exception as e:
+            logger.error(f"MCP client context test failed: {e}")
+            return {
+                "status": "error",
+                "message": f"MCP client context test failed: {str(e)}",
+                "error_type": str(type(e))
+            }
+    
+    def is_mcp_client_healthy(self) -> bool:
+        """Check if the MCP client is in a healthy state"""
+        if not self.mcp_client:
+            return False
+        
+        try:
+            # Quick test to see if the client can enter context
+            with self.mcp_client:
+                return True
+        except Exception:
+            return False
+    
+    def ensure_mcp_client_context(self):
+        """Ensure the MCP client is in a valid state, reinitialize if needed"""
+        if not self.is_mcp_client_healthy():
+            logger.warning("MCP client is not healthy, attempting to reinitialize...")
+            try:
+                self._setup_agentcore_gateway()
+                if self.is_mcp_client_healthy():
+                    logger.info("MCP client successfully reinitialized")
+                    return True
+                else:
+                    logger.error("Failed to reinitialize MCP client")
+                    return False
+            except Exception as e:
+                logger.error(f"Error reinitializing MCP client: {e}")
+                return False
+        return True
     
     def get_agent_tools(self, agent_name: str) -> List[Dict[str, Any]]:
         """Get tools available for a specific agent"""
