@@ -203,7 +203,9 @@ jobs:
               "API_TIMEOUT": "30",
               "LOG_LEVEL": "INFO",
               "LOG_FORMAT": "json",
-              "LOG_DESTINATION": "cloudwatch"
+              "LOG_DESTINATION": "cloudwatch",
+              "OTEL_PYTHON_DISABLED": "true",
+              "STRANDS_DISABLE_TELEMETRY": "true"
             }
           }
           EOF
@@ -233,7 +235,9 @@ jobs:
               "API_TIMEOUT": "${{ vars.API_TIMEOUT || '30' }}",
               "LOG_LEVEL": "${{ vars.LOG_LEVEL || 'INFO' }}",
               "LOG_FORMAT": "${{ vars.LOG_FORMAT || 'json' }}",
-              "LOG_DESTINATION": "${{ vars.LOG_DESTINATION || 'cloudwatch' }}"
+              "LOG_DESTINATION": "${{ vars.LOG_DESTINATION || 'cloudwatch' }}",
+              "OTEL_PYTHON_DISABLED": "true",
+              "STRANDS_DISABLE_TELEMETRY": "true"
             }
           }
           EOF
