@@ -227,9 +227,10 @@ class StrandsAgentOrchestrator:
                     tmp_tools = self.mcp_client.list_tools_sync(pagination_token=pagination_token)
                     logger.info(f"Retrieved {len(tmp_tools)} tools in this batch")
                     
-                    # Log tool details
+                    # Log tool details - use getattr to handle missing description
                     for tool in tmp_tools:
-                        logger.info(f"Tool: {tool.tool_name} - {tool.description}")
+                        description = getattr(tool, 'description', 'No description available')
+                        logger.info(f"Tool: {tool.tool_name} - {description}")
                     
                     self.gateway_tools.extend(tmp_tools)
                     tools_loaded += len(tmp_tools)
@@ -551,7 +552,7 @@ class StrandsAgentOrchestrator:
         for tool in self.gateway_tools:
             tools_info.append({
                 "name": tool.tool_name,
-                "description": tool.description,
+                "description": getattr(tool, 'description', 'No description available'),
                 "input_schema": getattr(tool, 'input_schema', {})
             })
         return tools_info
@@ -610,7 +611,7 @@ class StrandsAgentOrchestrator:
             return {"success": False, "error": f"Tool {tool_name} not found"}
         
         logger.info(f"Found tool: {target_tool.tool_name}")
-        logger.info(f"Tool description: {target_tool.description}")
+        logger.info(f"Tool description: {getattr(target_tool, 'description', 'No description available')}")
         logger.info(f"Tool input schema: {getattr(target_tool, 'input_schema', 'Not available')}")
         
         # Use default parameters if none provided
@@ -671,7 +672,7 @@ class StrandsAgentOrchestrator:
         for tool in self.agent_tools[agent_name]:
             tools_info.append({
                 "name": tool.tool_name,
-                "description": tool.description,
+                "description": getattr(tool, 'description', 'No description available'),
                 "input_schema": getattr(tool, 'input_schema', {})
             })
         return tools_info 

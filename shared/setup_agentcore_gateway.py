@@ -188,7 +188,8 @@ def list_gateway_tools(gateway_url: str, access_token: str = None):
             tools = get_full_tools_list(mcp_client)
             logger.info(f"Found {len(tools)} tools in gateway:")
             for tool in tools:
-                logger.info(f"  - {tool.tool_name}: {tool.description}")
+                description = getattr(tool, 'description', 'No description available')
+                logger.info(f"  - {tool.tool_name}: {description}")
             return tools
             
     except Exception as e:
