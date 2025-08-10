@@ -65,14 +65,6 @@ jobs:
             echo "ERROR: build-main directory is empty!"
             exit 1
           fi
-          
-          # Clean up unnecessary files to reduce package size
-          find build-main -name "*.pyc" -delete
-          find build-main -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-main -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-main -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-main -name "*.txt" -delete
-          find build-main -name "*.md" -delete
 
           # Show final contents before zipping
           echo "Final contents before zipping:"
@@ -139,14 +131,7 @@ jobs:
             echo "ERROR: build-tool directory is empty!"
             exit 1
           fi
-          
-          # Clean up unnecessary files to reduce package size
-          find build-tool -name "*.pyc" -delete
-          find build-tool -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-tool -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-tool -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
-          find build-tool -name "*.txt" -delete
-          find build-tool -name "*.md" -delete
+
 
           # Show final contents before zipping
           echo "Final contents before zipping:"
