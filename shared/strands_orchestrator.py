@@ -1,5 +1,5 @@
 from typing import Dict, Any, List
-from strands import Agent, Message
+from strands import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp.mcp_client import MCPClient
 from mcp.client.streamable_http import streamablehttp_client
