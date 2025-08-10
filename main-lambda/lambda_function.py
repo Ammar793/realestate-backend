@@ -2,7 +2,7 @@ import json
 import os
 import boto3
 import asyncio
-from shared.strands_orchestrator import StrandsAgentOrchestrator
+from strands_orchestrator import StrandsAgentOrchestrator
 
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
@@ -172,25 +172,6 @@ async def _handle_agent_query(body: dict) -> dict:
             "body": json.dumps({"error": "Failed to process agent query", "details": str(e)})
         }
 
-async def _handle_tool_execution(body: dict) -> dict:
-    """Handle direct tool execution requests by forwarding to tool lambda"""
-    try:
-        # Forward tool execution requests to the dedicated tool lambda
-        # This lambda now only handles agent queries and workflows
-        return {
-            "statusCode": 400,
-            "headers": _cors_headers(),
-            "body": json.dumps({"error": "Tool execution has been moved to a separate lambda. Please use the tool lambda endpoint."})
-        }
-        
-    except Exception as e:
-        return {
-            "statusCode": 500,
-            "headers": _cors_headers(),
-            "body": json.dumps({"error": "Failed to process tool request", "details": str(e)})
-        }
-
-
 
 async def _handle_workflow_execution(body: dict) -> dict:
     """Handle workflow execution requests"""
@@ -241,10 +222,6 @@ def handler(event, context):
                 return asyncio.run(_handle_workflow_execution(body))
             else:
                 return asyncio.run(_handle_agent_query(body))
-        
-        # Check if this is a direct tool execution request
-        if body.get("tool_name"):
-            return asyncio.run(_handle_tool_execution(body))
         
         # Fall back to original Bedrock knowledge base approach
         question = body.get("question")
