@@ -80,25 +80,65 @@ jobs:
             --publish
           aws lambda wait function-updated --function-name selador-realestate-backend
 
+      - name: Create env JSON for main lambda
+        run: |
+          cat > env-main.json <<'EOF'
+          {
+            "Variables": {
+              "KNOWLEDGE_BASE_ID": "${{ vars.KNOWLEDGE_BASE_ID }}",
+              "MODEL_ARN": "${{ vars.MODEL_ARN }}",
+              "GATEWAY_NAME": "JLSRealEstateGateway",
+              "AGENTCORE_GATEWAY_URL": "${{ vars.AGENTCORE_GATEWAY_URL }}",
+              "AGENTCORE_ACCESS_TOKEN": "${{ secrets.AGENTCORE_ACCESS_TOKEN }}",
+              "AGENT_LOG_LEVEL": "INFO",
+              "AGENT_TIMEOUT": "30",
+              "AGENT_MAX_RETRIES": "3",
+              "WORKFLOW_PARALLEL_LIMIT": "5",
+              "WORKFLOW_TIMEOUT": "120",
+              "API_RATE_LIMIT": "100",
+              "API_TIMEOUT": "30",
+              "LOG_LEVEL": "INFO",
+              "LOG_FORMAT": "json",
+              "LOG_DESTINATION": "cloudwatch"
+            }
+          }
+          EOF
+
       - name: Update main lambda environment variables
         run: |
           aws lambda update-function-configuration \
             --function-name selador-realestate-backend \
-            --environment "Variables={AWS_REGION=us-west-2,KNOWLEDGE_BASE_ID=${{ vars.KNOWLEDGE_BASE_ID }},MODEL_ARN=${{ vars.MODEL_ARN }},GATEWAY_NAME=JLSRealEstateGateway,AGENTCORE_GATEWAY_URL=${{ vars.AGENTCORE_GATEWAY_URL }},AGENTCORE_ACCESS_TOKEN=${{ secrets.AGENTCORE_ACCESS_TOKEN }},AGENT_LOG_LEVEL=INFO,AGENT_TIMEOUT=30,AGENT_MAX_RETRIES=3,WORKFLOW_PARALLEL_LIMIT=5,WORKFLOW_TIMEOUT=120,API_RATE_LIMIT=100,API_TIMEOUT=30,LOG_LEVEL=INFO,LOG_FORMAT=json,LOG_DESTINATION=cloudwatch}"
+            --environment file://env-main.json
 
-      - name: Update tool lambda code
+      - name: Create env JSON for tool lambda
         run: |
-          aws lambda update-function-code \
-            --function-name selador-realestate-tools \
-            --zip-file fileb://function-tool.zip \
-            --publish
-          aws lambda wait function-updated --function-name selador-realestate-tools
+          cat > env-tool.json <<'EOF'
+          {
+            "Variables": {
+              "KNOWLEDGE_BASE_ID": "${{ vars.KNOWLEDGE_BASE_ID }}",
+              "MODEL_ARN": "${{ vars.MODEL_ARN }}",
+              "GATEWAY_NAME": "${{ vars.GATEWAY_NAME || 'JLSRealEstateGateway' }}",
+              "AGENTCORE_GATEWAY_URL": "${{ vars.AGENTCORE_GATEWAY_URL }}",
+              "AGENTCORE_ACCESS_TOKEN": "${{ secrets.AGENTCORE_ACCESS_TOKEN }}",
+              "AGENT_LOG_LEVEL": "${{ vars.AGENT_LOG_LEVEL || 'INFO' }}",
+              "AGENT_TIMEOUT": "${{ vars.AGENT_TIMEOUT || '30' }}",
+              "AGENT_MAX_RETRIES": "${{ vars.AGENT_MAX_RETRIES || '3' }}",
+              "WORKFLOW_PARALLEL_LIMIT": "${{ vars.WORKFLOW_PARALLEL_LIMIT || '5' }}",
+              "WORKFLOW_TIMEOUT": "${{ vars.WORKFLOW_TIMEOUT || '120' }}",
+              "API_RATE_LIMIT": "${{ vars.API_RATE_LIMIT || '100' }}",
+              "API_TIMEOUT": "${{ vars.API_TIMEOUT || '30' }}",
+              "LOG_LEVEL": "${{ vars.LOG_LEVEL || 'INFO' }}",
+              "LOG_FORMAT": "${{ vars.LOG_FORMAT || 'json' }}",
+              "LOG_DESTINATION": "${{ vars.LOG_DESTINATION || 'cloudwatch' }}"
+            }
+          }
+          EOF
 
       - name: Update tool lambda environment variables
         run: |
           aws lambda update-function-configuration \
             --function-name selador-realestate-tools \
-            --environment "Variables={AWS_REGION=${{ vars.AWS_REGION || 'us-west-2' }},KNOWLEDGE_BASE_ID=${{ vars.KNOWLEDGE_BASE_ID }},MODEL_ARN=${{ vars.MODEL_ARN }},GATEWAY_NAME=${{ vars.GATEWAY_NAME || 'JLSRealEstateGateway' }},AGENTCORE_GATEWAY_URL=${{ vars.AGENTCORE_GATEWAY_URL }},AGENTCORE_ACCESS_TOKEN=${{ secrets.AGENTCORE_ACCESS_TOKEN }},AGENT_LOG_LEVEL=${{ vars.AGENT_LOG_LEVEL || 'INFO' }},AGENT_TIMEOUT=${{ vars.AGENT_TIMEOUT || '30' }},AGENT_MAX_RETRIES=${{ vars.AGENT_MAX_RETRIES || '3' }},WORKFLOW_PARALLEL_LIMIT=${{ vars.WORKFLOW_PARALLEL_LIMIT || '5' }},WORKFLOW_TIMEOUT=${{ vars.WORKFLOW_TIMEOUT || '120' }},API_RATE_LIMIT=${{ vars.API_RATE_LIMIT || '100' }},API_TIMEOUT=${{ vars.API_TIMEOUT || '30' }},LOG_LEVEL=${{ vars.LOG_LEVEL || 'INFO' }},LOG_FORMAT=${{ vars.LOG_FORMAT || 'json' }},LOG_DESTINATION=${{ vars.LOG_DESTINATION || 'cloudwatch' }}}"
+            --environment file://env-tool.json
 
       # ----- Optional: use S3 if your zip ever exceeds 50MB -----
       # - name: Upload zips to S3
