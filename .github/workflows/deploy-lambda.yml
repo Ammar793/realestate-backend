@@ -214,7 +214,9 @@ jobs:
         run: |
           aws lambda update-function-configuration \
             --function-name selador-realestate-backend \
-            --environment file://env-main.json
+            --environment file://env-main.json \
+            --layers arn:aws:lambda:us-west-2:184161586896:layer:opentelemetry-python-0_15_0:1
+
 
       - name: Create env JSON for tool lambda
         run: |
@@ -246,7 +248,8 @@ jobs:
         run: |
           aws lambda update-function-configuration \
             --function-name selador-realestate-tools \
-            --environment file://env-tool.json
+            --environment file://env-tool.json \
+            --layers arn:aws:lambda:us-west-2:184161586896:layer:opentelemetry-python-0_15_0:1
 
       # ----- S3 upload for large packages (recommended approach) -----
       - name: Upload zips to S3

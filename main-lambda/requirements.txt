@@ -1,11 +1,8 @@
 # Core AWS dependencies (minimal)
 boto3>=1.34.0
 
-# Strands Agents framework - AI agent SDK (pinned to avoid opentelemetry issues)
-strands-agents==1.4.0
+# Strands Agents framework - AI agent SDK
+strands-agents>=1.4.0
 
 # MCP (Model Context Protocol) support
-mcp>=0.1.0
-
-# Lambda-compatible OpenTelemetry to fix runtime context issues
-opentelemetry-lambda>=1.0.0 
+mcp>=0.1.0 
