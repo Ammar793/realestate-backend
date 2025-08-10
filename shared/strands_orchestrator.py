@@ -232,25 +232,35 @@ class StrandsAgentOrchestrator:
             
             target_agent = self.agents[target_agent_name]
             
-            # Create a message for the selected agent (simplified without AgentSystem)
-            message = Message(
-                sender="user",
-                recipient=target_agent_name,
-                content=f"Query: {query}\nContext: {context}\nType: {query_type}"
-            )
+            # Create the full query with context
+            full_query = f"Query: {query}"
+            if context:
+                full_query += f"\nContext: {context}"
+            if query_type != "general":
+                full_query += f"\nQuery Type: {query_type}"
             
-            # Simplified message handling without AgentSystem
-            # For now, simulate a response from the agent
-            response_content = f"Query processed by {target_agent_name}: {query}"
-            
-            return {
-                "success": True,
-                "content": response_content,
-                "agent": target_agent_name,
-                "query_type": query_type,
-                "tools_used": len(self.gateway_tools),
-                "selected_agent": target_agent_name
-            }
+            # Execute the agent directly using Strands Agent.__call__ method
+            try:
+                # Use the agent directly - Strands Agent objects are callable
+                response = await target_agent(full_query)
+                
+                return {
+                    "success": True,
+                    "content": response.content if hasattr(response, 'content') else str(response),
+                    "agent": target_agent_name,
+                    "query_type": query_type,
+                    "tools_used": len(self.gateway_tools),
+                    "selected_agent": target_agent_name
+                }
+                
+            except Exception as agent_error:
+                logger.error(f"Error executing agent {target_agent_name}: {agent_error}")
+                return {
+                    "success": False,
+                    "error": f"Agent execution failed: {str(agent_error)}",
+                    "agent": target_agent_name,
+                    "query_type": query_type
+                }
             
         except Exception as e:
             logger.error(f"Error routing query: {e}")
@@ -303,23 +313,32 @@ class StrandsAgentOrchestrator:
     async def _execute_agent_action(self, agent: Agent, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an action on a specific agent"""
         try:
-            # Create a message for the agent
-            message = Message(
-                sender="supervisor",
-                recipient=agent.name,
-                content=f"Action: {action}\nParameters: {parameters}"
-            )
+            # Create the action prompt with parameters
+            action_prompt = f"Execute action: {action}"
+            if parameters:
+                action_prompt += f"\nParameters: {json.dumps(parameters, indent=2)}"
             
-            # Simplified action execution without AgentSystem.send_message
-            # For now, simulate a response from the agent
-            response_content = f"Action {action} executed by {agent.name} with parameters: {parameters}"
-            
-            return {
-                "success": True,
-                "content": response_content,
-                "agent": agent.name,
-                "action": action
-            }
+            # Execute the agent directly using Strands Agent.__call__ method
+            try:
+                # Use the agent directly - Strands Agent objects are callable
+                response = await agent(action_prompt)
+                
+                return {
+                    "success": True,
+                    "content": response.content if hasattr(response, 'content') else str(response),
+                    "agent": agent.name,
+                    "action": action,
+                    "parameters": parameters
+                }
+                
+            except Exception as agent_error:
+                logger.error(f"Error executing action {action} on agent {agent.name}: {agent_error}")
+                return {
+                    "success": False,
+                    "error": f"Agent action execution failed: {str(agent_error)}",
+                    "agent": agent.name,
+                    "action": action
+                }
             
         except Exception as e:
             logger.error(f"Error executing agent action: {e}")
