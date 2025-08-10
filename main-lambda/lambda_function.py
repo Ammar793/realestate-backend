@@ -45,11 +45,31 @@ def _get_orchestrator():
     if _orchestrator is None:
         print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE ===")
         logger.info("Creating new Strands agent orchestrator instance")
-        _orchestrator = StrandsAgentOrchestrator()
-        print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
+        try:
+            _orchestrator = StrandsAgentOrchestrator()
+            print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
+            logger.info("Orchestrator instance created successfully")
+        except Exception as e:
+            print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE: {e} ===")
+            logger.error(f"Failed to create orchestrator instance: {e}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
     else:
         print("=== REUSING EXISTING ORCHESTRATOR INSTANCE ===")
         logger.debug("Reusing existing Strands agent orchestrator instance")
+    
+    # Validate the orchestrator is working
+    try:
+        status = _orchestrator.get_system_status()
+        logger.info(f"Orchestrator status: {status}")
+    except Exception as e:
+        logger.error(f"Orchestrator validation failed: {e}")
+        # Reset the orchestrator if it's not working
+        _orchestrator = None
+        raise Exception(f"Orchestrator validation failed: {e}")
+    
     return _orchestrator
 
 def _cors_headers():
@@ -80,6 +100,8 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
                                          domain: str, stage: str) -> None:
     """Stream agent response to WebSocket client using native Strands streaming"""
     try:
+        logger.info(f"Starting WebSocket streaming for connection {connection_id}")
+        
         # Send initial status
         _send_websocket_message(connection_id, {
             "type": "status",
@@ -89,79 +111,111 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
         
         # Execute the query with native Strands streaming
         try:
+            logger.info("Getting orchestrator instance for streaming")
             orchestrator = _get_orchestrator()
+            logger.info("Orchestrator retrieved, starting route_query")
             
             # Use native Strands streaming
+            event_count = 0
+            start_time = time.time()
+            
             async for stream_event in orchestrator.route_query(query, context, query_type):
+                event_count += 1
+                current_time = time.time()
+                elapsed_time = current_time - start_time
+                
+                logger.info(f"Received stream event #{event_count}: type={stream_event.get('type')} (elapsed: {elapsed_time:.2f}s)")
+                
+                # Check if we're approaching Lambda timeout (leave 30 seconds buffer)
+                if elapsed_time > 870:  # 15 minutes - 30 seconds buffer
+                    logger.warning("Approaching Lambda timeout, sending timeout message and stopping")
+                    _send_websocket_message(connection_id, {
+                        "type": "error",
+                        "error": "Query timeout - Lambda execution time limit reached",
+                        "timestamp": current_time
+                    }, domain, stage)
+                    break
+                
                 if stream_event.get("type") == "stream":
                     # This is a Strands event - process it based on event type
                     event = stream_event.get("event", {})
+                    logger.info(f"Processing stream event: {list(event.keys())}")
                     
                     # Handle different types of Strands events
                     if "data" in event:
                         # Text generation event - stream text to client
+                        logger.info(f"Sending text chunk: {len(event['data'])} characters")
                         _send_websocket_message(connection_id, {
                             "type": "text_chunk",
                             "data": event["data"],
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                     elif "current_tool_use" in event:
                         # Tool usage event
                         tool_info = event["current_tool_use"]
+                        logger.info(f"Sending tool use event: {tool_info.get('name', 'Unknown')}")
                         _send_websocket_message(connection_id, {
                             "type": "tool_use",
                             "tool_name": tool_info.get("name", "Unknown"),
                             "tool_id": tool_info.get("toolUseId", ""),
                             "input": tool_info.get("input", {}),
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                     elif "reasoning" in event and event.get("reasoning"):
                         # Reasoning event
+                        logger.info("Sending reasoning event")
                         _send_websocket_message(connection_id, {
                             "type": "reasoning",
                             "text": event.get("reasoningText", ""),
                             "signature": event.get("reasoning_signature", ""),
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                     elif "start" in event and event.get("start"):
                         # New cycle started
+                        logger.info("Sending cycle start event")
                         _send_websocket_message(connection_id, {
                             "type": "cycle_start",
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                     elif "message" in event:
                         # New message created
                         message = event["message"]
+                        logger.info(f"Sending message event: role={message.get('role', 'unknown')}")
                         _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                     elif "result" in event:
                         # Final result
                         result = event["result"]
+                        logger.info("Sending final result event")
                         _send_websocket_message(connection_id, {
                             "type": "result",
                             "content": result.content if hasattr(result, 'content') else str(result),
                             "agent": stream_event.get("agent", "unknown"),
                             "query_type": stream_event.get("query_type", "general"),
-                            "timestamp": time.time()
+                            "timestamp": current_time
                         }, domain, stage)
                         
                 elif stream_event.get("type") == "error":
                     # Error event
+                    logger.error(f"Received error event: {stream_event.get('error')}")
                     _send_websocket_message(connection_id, {
                         "type": "error",
                         "error": stream_event.get("error", "Unknown error"),
-                        "timestamp": time.time()
+                        "timestamp": current_time
                     }, domain, stage)
                     break
                     
+            total_time = time.time() - start_time
+            logger.info(f"Streaming completed after {event_count} events in {total_time:.2f} seconds")
+            
             # Send completion status
             _send_websocket_message(connection_id, {
                 "type": "status",
@@ -171,6 +225,9 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
             
         except Exception as e:
             logger.error(f"Error in agent streaming: {e}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             _send_websocket_message(connection_id, {
                 "type": "error",
                 "error": f"Agent execution failed: {str(e)}",
@@ -179,6 +236,9 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
             
     except Exception as e:
         logger.error(f"Error in WebSocket streaming: {e}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         _send_websocket_message(connection_id, {
             "type": "error",
             "error": f"WebSocket streaming failed: {str(e)}",
@@ -236,11 +296,13 @@ async def _handle_websocket_invoke(event: dict) -> dict:
         
         logger.info(f"Processing WebSocket invoke request: connection_id={connection_id}, query_length={len(query)}")
         
-        # Start streaming the response asynchronously
-        # Note: This runs in the background and doesn't block the response
-        asyncio.create_task(_stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage))
+        # IMPORTANT: For Lambda, we need to wait for the streaming to complete
+        # Lambda functions terminate when the handler returns, so background tasks get killed
+        logger.info("Starting agent response streaming (will wait for completion)")
+        await _stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage)
         
-        return _format_websocket_response(200, "Query processing started")
+        logger.info("Agent response streaming completed successfully")
+        return _format_websocket_response(200, "Query processing completed")
         
     except Exception as e:
         logger.error(f"Error handling WebSocket invoke: {e}")
@@ -765,4 +827,27 @@ async def _async_handler(event, context):
 
 def handler(event, context):
     """Synchronous wrapper for the async handler"""
-    return asyncio.run(_async_handler(event, context))
+    try:
+        # Add context information logging
+        logger.info(f"Lambda handler invoked - Function: {context.function_name}")
+        logger.info(f"Lambda timeout: {context.get_remaining_time_in_millis()}ms remaining")
+        logger.info(f"Lambda memory: {context.memory_limit_in_mb}MB allocated")
+        
+        # Run the async handler
+        result = asyncio.run(_async_handler(event, context))
+        
+        logger.info("Lambda handler completed successfully")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Lambda handler failed with error: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        # Return a proper error response
+        return {
+            "statusCode": 500,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Lambda execution failed", "details": str(e)})
+        }
