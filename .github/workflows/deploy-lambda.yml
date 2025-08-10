@@ -34,18 +34,36 @@ jobs:
           rm -rf build-main function-main.zip
           mkdir -p build-main
 
-          # Install dependencies
+          # Install dependencies with size optimization
           python -m pip install --upgrade pip
           if [ -f main-lambda/requirements.txt ] && [ -s main-lambda/requirements.txt ]; then
-            pip install -r main-lambda/requirements.txt --target build-main
+            pip install -r main-lambda/requirements.txt --target build-main --no-deps --compile
           fi
 
           # Add main lambda code
           cp main-lambda/lambda_function.py build-main/
           cp shared/strands_orchestrator.py build-main/
+          
+          # Clean up unnecessary files to reduce package size
+          find build-main -name "*.pyc" -delete
+          find build-main -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-main -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-main -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-main -name "*.txt" -delete
+          find build-main -name "*.md" -delete
 
           # Zip everything
           (cd build-main && zip -r ../function-main.zip .)
+          
+          # Check package size
+          PACKAGE_SIZE=$(du -m ../function-main.zip | cut -f1)
+          echo "Main lambda package size: ${PACKAGE_SIZE}MB"
+          
+          # Fail if package is too large (Lambda limit is ~50MB)
+          if [ "$PACKAGE_SIZE" -gt 45 ]; then
+            echo "ERROR: Package size ${PACKAGE_SIZE}MB exceeds Lambda limit of 50MB"
+            exit 1
+          fi
 
       - name: Build tool lambda deployment zip
         run: |
@@ -53,18 +71,36 @@ jobs:
           rm -rf build-tool function-tool.zip
           mkdir -p build-tool
 
-          # Install dependencies
+          # Install dependencies with size optimization
           python -m pip install --upgrade pip
           if [ -f tool-lambda/requirements.txt ] && [ -s tool-lambda/requirements.txt ]; then
-            pip install -r tool-lambda/requirements.txt --target build-tool
+            pip install -r tool-lambda/requirements.txt --target build-tool --no-deps --compile
           fi
 
           # Add tool lambda code
           cp tool-lambda/tool_lambda_function.py build-tool/
           cp shared/strands_orchestrator.py build-tool/
+          
+          # Clean up unnecessary files to reduce package size
+          find build-tool -name "*.pyc" -delete
+          find build-tool -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-tool -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-tool -name "tests" -type d -exec rm -rf {} + 2>/dev/null || true
+          find build-tool -name "*.txt" -delete
+          find build-tool -name "*.md" -delete
 
           # Zip everything
           (cd build-tool && zip -r ../function-tool.zip .)
+          
+          # Check package size
+          PACKAGE_SIZE=$(du -m ../function-tool.zip | cut -f1)
+          echo "Tool lambda package size: ${PACKAGE_SIZE}MB"
+          
+          # Fail if package is too large (Lambda limit is ~50MB)
+          if [ "$PACKAGE_SIZE" -gt 45 ]; then
+            echo "ERROR: Package size ${PACKAGE_SIZE}MB exceeds Lambda limit of 50MB"
+            exit 1
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
