@@ -10,3 +10,5 @@ strands-agents-tools>=0.2.2
 
 # MCP (Model Context Protocol) support
 mcp>=0.1.0
+
+pydantic-core>=2.0.0
