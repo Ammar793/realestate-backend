@@ -87,7 +87,7 @@ jobs:
             "Variables": {
               "KNOWLEDGE_BASE_ID": "${{ vars.KNOWLEDGE_BASE_ID }}",
               "MODEL_ARN": "${{ vars.MODEL_ARN }}",
-              "GATEWAY_NAME": "JLSRealEstateGateway",
+              "GATEWAY_NAME": "${{ vars.GATEWAY_NAME || 'JLSRealEstateGateway' }}",
               "AGENTCORE_GATEWAY_URL": "${{ vars.AGENTCORE_GATEWAY_URL }}",
               "AGENTCORE_ACCESS_TOKEN": "${{ secrets.AGENTCORE_ACCESS_TOKEN }}",
               "AGENT_LOG_LEVEL": "INFO",
