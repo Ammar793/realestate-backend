@@ -99,7 +99,7 @@ jobs:
           fi
           
           # Check package size (informational only - S3 handles large packages)
-          PACKAGE_SIZE=$(du -m ../function-main.zip | cut -f1)
+          PACKAGE_SIZE=$(du -m function-main.zip | cut -f1)
           echo "Main lambda package size: ${PACKAGE_SIZE}MB"
 
       - name: Build tool lambda deployment zip
@@ -173,7 +173,7 @@ jobs:
           fi
           
           # Check package size (informational only - S3 handles large packages)
-          PACKAGE_SIZE=$(du -m ../function-tool.zip | cut -f1)
+          PACKAGE_SIZE=$(du -m function-tool.zip | cut -f1)
           echo "Tool lambda package size: ${PACKAGE_SIZE}MB"
 
       - name: Configure AWS credentials (OIDC)
