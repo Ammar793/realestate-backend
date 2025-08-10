@@ -15,7 +15,7 @@ python-dotenv>=0.19.0
 python-multipart>=0.0.6
 
 # AWS AgentCore dependencies
-bedrock-agentcore>=1.0.0
+bedrock-agentcore>=0.1.0,<1.0.0
 
 # Additional utilities
 python-dateutil>=2.8.0
