@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, AsyncIterator
 from strands import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp.mcp_client import MCPClient
@@ -21,7 +21,6 @@ class StrandsAgentOrchestrator:
         self.mcp_client = None
         self.gateway_tools = []
         self.agent_tools = {}  # Initialize agent_tools dict
-        self.progress_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
         
         # Load AgentCore configuration
         logger.info("Loading AgentCore configuration...")
@@ -45,28 +44,6 @@ class StrandsAgentOrchestrator:
         
         logger.info("=== STRANDS ORCHESTRATOR INITIALIZATION COMPLETE ===")
         logger.info(f"Final status: {len(self.agents)} agents, {len(self.gateway_tools)} tools, MCP client: {self.mcp_client is not None}")
-    
-    def set_progress_callback(self, callback: Callable[[str, str, Dict[str, Any]], None]):
-        """Set a callback function to receive progress updates during agent execution
-        
-        Args:
-            callback: Function that takes (message_type, message, metadata) parameters
-                     message_type: 'thinking', 'tool_call', 'step_complete', etc.
-                     message: Human-readable message about what's happening
-                     metadata: Additional context data
-        """
-        self.progress_callback = callback
-        logger.info("Progress callback set for orchestrator")
-    
-    def _send_progress(self, message_type: str, message: str, metadata: Dict[str, Any] = None):
-        """Send progress update through the callback if set"""
-        if self.progress_callback:
-            try:
-                self.progress_callback(message_type, message, metadata or {})
-            except Exception as e:
-                logger.error(f"Error in progress callback: {e}")
-        else:
-            logger.debug(f"Progress update (no callback): {message_type}: {message}")
     
     def _load_agentcore_config(self) -> Dict[str, Any]:
         """Load AgentCore Gateway configuration"""
@@ -428,29 +405,168 @@ class StrandsAgentOrchestrator:
             }
         }
     
-    async def route_query(self, query: str, context: str = "", query_type: str = "general") -> Dict[str, Any]:
-        """Route a query through the Strands agent system"""
+    async def route_query(self, query: str, context: str = "", query_type: str = "general") -> AsyncIterator[Dict[str, Any]]:
+        """Route a query through the Strands agent system using native streaming"""
         try:
             logger.info(f"=== STRANDS ORCHESTRATOR: Starting route_query ===")
             logger.info(f"Query: {query}")
             logger.info(f"Context: {context}")
             logger.info(f"Query Type: {query_type}")
             
-            # Send initial progress update
-            self._send_progress("thinking", "Analyzing your query and determining the best approach...", {
-                "query": query,
-                "query_type": query_type,
-                "context_length": len(context)
-            })
-            
             # Determine which agent to use based on query type
             target_agent_name = self._select_agent_for_query(query, query_type)
             logger.info(f"Selected agent: {target_agent_name}")
             
-            self._send_progress("thinking", f"Selected {target_agent_name} agent for this query type", {
-                "selected_agent": target_agent_name,
-                "query_type": query_type
-            })
+            if target_agent_name not in self.agents:
+                logger.error(f"Agent {target_agent_name} not found in available agents: {list(self.agents.keys())}")
+                yield {
+                    "type": "error",
+                    "error": f"Agent {target_agent_name} not found",
+                    "success": False
+                }
+                return
+            
+            target_agent = self.agents[target_agent_name]
+            logger.info(f"Retrieved agent: {target_agent.name}")
+            
+            # Check if agent has tools
+            agent_tools_count = len(self.agent_tools.get(target_agent_name, []))
+            logger.info(f"Agent {target_agent_name} has {agent_tools_count} tools available")
+            
+            # Create the full query with context and tool invocation limits
+            full_query = f"Query: {query}"
+            if context:
+                full_query += f"\nContext: {context}"
+            if query_type != "general":
+                full_query += f"\nQuery Type: {query_type}"
+            
+            # Add tool invocation limit instruction
+            full_query += f"\n\nIMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations for this query. Use your tools efficiently and strategically."
+            
+            logger.info(f"Full query to send to agent: {full_query}")
+            logger.info(f"=== EXECUTING AGENT {target_agent_name} ===")
+            
+            # Execute the agent using native Strands streaming
+            try:
+                logger.info(f"Calling agent.stream_async() with query...")
+                
+                # If the agent has tools, execute within MCP client context
+                if agent_tools_count > 0 and self.mcp_client:
+                    logger.info(f"Agent has {agent_tools_count} tools, executing within MCP client context")
+                    
+                    # Ensure MCP client is healthy before execution
+                    if not self.ensure_mcp_client_context():
+                        logger.error("Failed to ensure healthy MCP client context")
+                        yield {
+                            "type": "error",
+                            "error": "MCP client is not in a healthy state",
+                            "success": False
+                        }
+                        return
+                    
+                    try:
+                        with self.mcp_client:
+                            logger.info("MCP client context entered for agent execution")
+                            
+                            # Use native Strands streaming
+                            async for event in target_agent.stream_async(full_query):
+                                # Stream all events directly from Strands
+                                yield {
+                                    "type": "stream",
+                                    "event": event,
+                                    "agent": target_agent_name,
+                                    "query_type": query_type
+                                }
+                            
+                            logger.info("Agent streaming completed within MCP context")
+                            
+                    except Exception as mcp_error:
+                        logger.error(f"MCP client context error: {mcp_error}")
+                        logger.error(f"MCP error type: {type(mcp_error)}")
+                        logger.error(f"MCP error details: {str(mcp_error)}")
+                        
+                        # Check for specific MCP client errors
+                        if "MCPClientInitializationError" in str(type(mcp_error)) or "client session is not running" in str(mcp_error):
+                            logger.error("Detected MCP client session issue - attempting to reinitialize")
+                            # Try to reinitialize the MCP client
+                            try:
+                                logger.info("Reinitializing MCP client...")
+                                self._setup_agentcore_gateway()
+                                if self.mcp_client:
+                                    logger.info("MCP client reinitialized, retrying agent execution")
+                                    with self.mcp_client:
+                                        async for event in target_agent.stream_async(full_query):
+                                            yield {
+                                                "type": "stream",
+                                                "event": event,
+                                                "agent": target_agent_name,
+                                                "query_type": query_type
+                                            }
+                                    logger.info("Agent execution completed after MCP client reinitialization")
+                                    return
+                            except Exception as reinit_error:
+                                logger.error(f"Failed to reinitialize MCP client: {reinit_error}")
+                        
+                        import traceback
+                        logger.error(f"MCP error traceback: {traceback.format_exc()}")
+                        yield {
+                            "type": "error",
+                            "error": f"MCP client error: {str(mcp_error)}",
+                            "success": False
+                        }
+                        return
+                else:
+                    logger.info("Agent has no tools or no MCP client, executing with streaming")
+                    
+                    # Use native Strands streaming even without tools
+                    async for event in target_agent.stream_async(full_query):
+                        yield {
+                            "type": "stream",
+                            "event": event,
+                            "agent": target_agent_name,
+                            "query_type": query_type
+                        }
+                    
+                    logger.info("Agent streaming completed normally")
+                
+                logger.info(f"Agent streaming completed successfully")
+                
+            except Exception as agent_error:
+                logger.error(f"Error executing agent {target_agent_name}: {agent_error}")
+                logger.error(f"Error type: {type(agent_error)}")
+                logger.error(f"Error details: {str(agent_error)}")
+                
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                yield {
+                    "type": "error",
+                    "error": f"Agent execution failed: {str(agent_error)}",
+                    "success": False
+                }
+            
+        except Exception as e:
+            logger.error(f"Error routing query: {e}")
+            logger.error(f"Error type: {type(e)}")
+            
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            yield {
+                "type": "error",
+                "error": str(e),
+                "success": False
+            }
+    
+    async def route_query_sync(self, query: str, context: str = "", query_type: str = "general") -> Dict[str, Any]:
+        """Route a query through the Strands agent system (synchronous version for backward compatibility)"""
+        try:
+            logger.info(f"=== STRANDS ORCHESTRATOR: Starting route_query_sync ===")
+            logger.info(f"Query: {query}")
+            logger.info(f"Context: {context}")
+            logger.info(f"Query Type: {query_type}")
+            
+            # Determine which agent to use based on query type
+            target_agent_name = self._select_agent_for_query(query, query_type)
+            logger.info(f"Selected agent: {target_agent_name}")
             
             if target_agent_name not in self.agents:
                 logger.error(f"Agent {target_agent_name} not found in available agents: {list(self.agents.keys())}")
@@ -466,13 +582,6 @@ class StrandsAgentOrchestrator:
             agent_tools_count = len(self.agent_tools.get(target_agent_name, []))
             logger.info(f"Agent {target_agent_name} has {agent_tools_count} tools available")
             
-            if agent_tools_count > 0:
-                logger.info(f"Available tools for {target_agent_name}: {[tool.tool_name for tool in self.agent_tools[target_agent_name]]}")
-                self._send_progress("thinking", f"Agent has access to {agent_tools_count} specialized tools for analysis", {
-                    "tools_available": [tool.tool_name for tool in self.agent_tools[target_agent_name]],
-                    "agent": target_agent_name
-                })
-            
             # Create the full query with context and tool invocation limits
             full_query = f"Query: {query}"
             if context:
@@ -486,23 +595,13 @@ class StrandsAgentOrchestrator:
             logger.info(f"Full query to send to agent: {full_query}")
             logger.info(f"=== EXECUTING AGENT {target_agent_name} ===")
             
-            self._send_progress("thinking", f"Executing {target_agent_name} agent with your query...", {
-                "agent": target_agent_name,
-                "query_length": len(query)
-            })
-            
-            # Execute the agent - it now has tools and can execute them directly
+            # Execute the agent using regular invoke method
             try:
                 logger.info(f"Calling agent.invoke() with query...")
                 
                 # If the agent has tools, execute within MCP client context
                 if agent_tools_count > 0 and self.mcp_client:
                     logger.info(f"Agent has {agent_tools_count} tools, executing within MCP client context")
-                    
-                    self._send_progress("thinking", "Setting up tool execution environment...", {
-                        "agent": target_agent_name,
-                        "mcp_client": True
-                    })
                     
                     # Ensure MCP client is healthy before execution
                     if not self.ensure_mcp_client_context():
@@ -517,10 +616,6 @@ class StrandsAgentOrchestrator:
                     try:
                         with self.mcp_client:
                             logger.info("MCP client context entered for agent execution")
-                            self._send_progress("thinking", "Agent is now processing your query with available tools...", {
-                                "agent": target_agent_name,
-                                "status": "executing"
-                            })
                             response = target_agent(full_query)
                             logger.info("Agent execution completed within MCP context")
                     except Exception as mcp_error:
@@ -528,28 +623,15 @@ class StrandsAgentOrchestrator:
                         logger.error(f"MCP error type: {type(mcp_error)}")
                         logger.error(f"MCP error details: {str(mcp_error)}")
                         
-                        self._send_progress("thinking", "Encountered an issue with the tool execution environment, attempting to recover...", {
-                            "agent": target_agent_name,
-                            "error": str(mcp_error),
-                            "status": "recovering"
-                        })
-                        
                         # Check for specific MCP client errors
                         if "MCPClientInitializationError" in str(type(mcp_error)) or "client session is not running" in str(mcp_error):
                             logger.error("Detected MCP client session issue - attempting to reinitialize")
                             # Try to reinitialize the MCP client
                             try:
-                                self._send_progress("thinking", "Reinitializing tool execution environment...", {
-                                    "agent": target_agent_name,
-                                    "status": "reinitializing"
-                                })
+                                logger.info("Reinitializing MCP client...")
                                 self._setup_agentcore_gateway()
                                 if self.mcp_client:
                                     logger.info("MCP client reinitialized, retrying agent execution")
-                                    self._send_progress("thinking", "Tool environment recovered, retrying execution...", {
-                                        "agent": target_agent_name,
-                                        "status": "retrying"
-                                    })
                                     with self.mcp_client:
                                         response = target_agent(full_query)
                                         logger.info("Agent execution completed after MCP client reinitialization")
@@ -572,21 +654,12 @@ class StrandsAgentOrchestrator:
                         raise mcp_error
                 else:
                     logger.info("Agent has no tools or no MCP client, executing normally")
-                    self._send_progress("thinking", "Agent is processing your query using knowledge and reasoning...", {
-                        "agent": target_agent_name,
-                        "tools_available": False
-                    })
                     response = target_agent(full_query)
                     logger.info("Agent execution completed normally")
                 
                 logger.info(f"Agent execution completed successfully")
                 logger.info(f"Response type: {type(response)}")
                 logger.info(f"Response attributes: {dir(response)}")
-                
-                self._send_progress("thinking", "Agent has completed processing, analyzing the results...", {
-                    "agent": target_agent_name,
-                    "status": "analyzing"
-                })
                 
                 # Extract content from response
                 if hasattr(response, 'content'):
@@ -619,25 +692,6 @@ class StrandsAgentOrchestrator:
                 
                 logger.info(f"Tools used in execution: {tools_used}")
                 
-                if tools_used > 0:
-                    self._send_progress("thinking", f"Agent used {tools_used} tools to gather information and provide insights", {
-                        "agent": target_agent_name,
-                        "tools_used": tools_used
-                    })
-                
-                # Check for other response attributes
-                if hasattr(response, 'stop_reason'):
-                    logger.info(f"Stop reason: {response.stop_reason}")
-                if hasattr(response, 'metrics'):
-                    logger.info(f"Execution metrics: {response.metrics}")
-                if hasattr(response, 'state'):
-                    logger.info(f"Final state: {response.state}")
-                
-                self._send_progress("thinking", "Finalizing response and preparing results for you...", {
-                    "agent": target_agent_name,
-                    "status": "finalizing"
-                })
-                
                 return {
                     "success": True,
                     "content": content,
@@ -654,12 +708,6 @@ class StrandsAgentOrchestrator:
                 logger.error(f"Error type: {type(agent_error)}")
                 logger.error(f"Error details: {str(agent_error)}")
                 
-                self._send_progress("thinking", f"Encountered an error during execution: {str(agent_error)}", {
-                    "agent": target_agent_name,
-                    "error": str(agent_error),
-                    "status": "error"
-                })
-                
                 import traceback
                 logger.error(f"Full traceback: {traceback.format_exc()}")
                 return {
@@ -673,11 +721,6 @@ class StrandsAgentOrchestrator:
         except Exception as e:
             logger.error(f"Error routing query: {e}")
             logger.error(f"Error type: {type(e)}")
-            
-            self._send_progress("thinking", f"System error occurred: {str(e)}", {
-                "error": str(e),
-                "status": "system_error"
-            })
             
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
@@ -711,25 +754,11 @@ class StrandsAgentOrchestrator:
         workflow = self.workflows[workflow_name]
         logger.info(f"Executing workflow: {workflow_name}")
         
-        self._send_progress("thinking", f"Starting workflow execution: {workflow_name}", {
-            "workflow": workflow_name,
-            "parameters": parameters,
-            "total_steps": len(workflow["steps"])
-        })
-        
         # Execute workflow steps
         results = {}
         for i, step in enumerate(workflow["steps"]):
             agent_name = step["agent"]
             action = step["action"]
-            
-            self._send_progress("thinking", f"Executing step {i+1}/{len(workflow['steps'])}: {action} using {agent_name} agent", {
-                "workflow": workflow_name,
-                "step_number": i + 1,
-                "total_steps": len(workflow["steps"]),
-                "agent": agent_name,
-                "action": action
-            })
             
             if agent_name in self.agents:
                 agent = self.agents[agent_name]
@@ -737,31 +766,13 @@ class StrandsAgentOrchestrator:
                 result = await self._execute_agent_action(agent, action, parameters)
                 results[action] = result
                 
-                self._send_progress("thinking", f"Completed step {i+1}: {action} - {'Success' if result.get('success') else 'Failed'}", {
-                    "workflow": workflow_name,
-                    "step_number": i + 1,
-                    "total_steps": len(workflow["steps"]),
-                    "agent": agent_name,
-                    "action": action,
-                    "result": result
-                })
+                logger.info(f"Completed step {i+1}: {action} - {'Success' if result.get('success') else 'Failed'}")
             else:
                 error_msg = f"Agent {agent_name} not found for step {action}"
-                self._send_progress("thinking", error_msg, {
-                    "workflow": workflow_name,
-                    "step_number": i + 1,
-                    "total_steps": len(workflow["steps"]),
-                    "agent": agent_name,
-                    "action": action,
-                    "error": "Agent not found"
-                })
+                logger.error(f"Workflow execution failed: {error_msg}")
                 results[action] = {"success": False, "error": error_msg}
         
-        self._send_progress("thinking", f"Workflow {workflow_name} completed successfully", {
-            "workflow": workflow_name,
-            "total_steps": len(workflow["steps"]),
-            "status": "completed"
-        })
+        logger.info(f"Workflow {workflow_name} completed successfully")
         
         return {
             "workflow": workflow_name,
@@ -772,12 +783,6 @@ class StrandsAgentOrchestrator:
     async def _execute_agent_action(self, agent: Agent, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an action on a specific agent"""
         try:
-            self._send_progress("thinking", f"Preparing to execute action: {action} with {agent.name} agent", {
-                "agent": agent.name,
-                "action": action,
-                "parameters": parameters
-            })
-            
             # Create the action prompt with parameters and tool invocation limits
             action_prompt = f"Execute action: {action}"
             if parameters:
