@@ -18,9 +18,9 @@ python-multipart>=0.0.6
 bedrock-agentcore>=0.1.0,<1.0.0
 bedrock-agentcore-starter-toolkit>=0.1.0
 
-# Strands framework dependencies
-strands>=0.1.0
-mcp>=0.1.0
+# Strands framework dependencies - Python 3.11 for better C++ compilation compatibility
+strands>=0.1.0,<1.0.0; python_version<"3.12"
+mcp>=0.1.0,<1.0.0; python_version<"3.12"
 
 # Additional utilities
 python-dateutil>=2.8.0
