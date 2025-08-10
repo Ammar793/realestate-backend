@@ -54,7 +54,8 @@ jobs:
 
           # Add main lambda code
           cp main-lambda/lambda_function.py build-main/
-          cp shared/strands_orchestrator.py build-main/
+          # Copy all shared modules
+          cp -r shared/* build-main/
           
           # Debug: Show what's in the build directory
           echo "Contents of build-main directory:"
@@ -120,7 +121,8 @@ jobs:
 
           # Add tool lambda code
           cp tool-lambda/tool_lambda_function.py build-tool/
-          cp shared/strands_orchestrator.py build-tool/
+          # Copy all shared modules
+          cp -r shared/* build-tool/
           
           # Debug: Show what's in the build directory
           echo "Contents of build-tool directory:"
