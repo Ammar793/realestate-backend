@@ -269,7 +269,8 @@ class StrandsAgentOrchestrator:
             # Execute the agent directly using Strands Agent.__call__ method
             try:
                 # Use the agent directly - Strands Agent objects are callable
-                response = await target_agent(full_query)
+                # Remove await since Agent.__call__ returns AgentResult directly
+                response = target_agent(full_query)
                 
                 return {
                     "success": True,
@@ -348,7 +349,8 @@ class StrandsAgentOrchestrator:
             # Execute the agent directly using Strands Agent.__call__ method
             try:
                 # Use the agent directly - Strands Agent objects are callable
-                response = await agent(action_prompt)
+                # Remove await since Agent.__call__ returns AgentResult directly
+                response = agent(action_prompt)
                 
                 return {
                     "success": True,
