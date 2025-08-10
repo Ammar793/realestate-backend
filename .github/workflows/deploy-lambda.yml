@@ -34,15 +34,23 @@ jobs:
           rm -rf build-main function-main.zip
           mkdir -p build-main
 
-          # Install dependencies with size optimization
+          # Install dependencies
           python -m pip install --upgrade pip
+          echo "Installing dependencies from main-lambda/requirements.txt..."
           if [ -f main-lambda/requirements.txt ] && [ -s main-lambda/requirements.txt ]; then
-            pip install -r main-lambda/requirements.txt --target build-main --no-deps --compile
+            pip install -r main-lambda/requirements.txt --target build-main --verbose
+            echo "Dependencies installed successfully"
+          else
+            echo "No requirements.txt found or file is empty"
           fi
 
           # Add main lambda code
           cp main-lambda/lambda_function.py build-main/
           cp shared/strands_orchestrator.py build-main/
+          
+          # Debug: Show what's in the build directory
+          echo "Contents of build-main directory:"
+          ls -la build-main/
           
           # Clean up unnecessary files to reduce package size
           find build-main -name "*.pyc" -delete
@@ -53,7 +61,14 @@ jobs:
           find build-main -name "*.md" -delete
 
           # Zip everything
+          echo "Creating zip file..."
           (cd build-main && zip -r ../function-main.zip .)
+          
+          # Verify zip was created
+          if [ ! -f ../function-main.zip ]; then
+            echo "ERROR: Failed to create function-main.zip"
+            exit 1
+          fi
           
           # Check package size
           PACKAGE_SIZE=$(du -m ../function-main.zip | cut -f1)
@@ -71,15 +86,23 @@ jobs:
           rm -rf build-tool function-tool.zip
           mkdir -p build-tool
 
-          # Install dependencies with size optimization
+          # Install dependencies
           python -m pip install --upgrade pip
+          echo "Installing dependencies from tool-lambda/requirements.txt..."
           if [ -f tool-lambda/requirements.txt ] && [ -s tool-lambda/requirements.txt ]; then
-            pip install -r tool-lambda/requirements.txt --target build-tool --no-deps --compile
+            pip install -r tool-lambda/requirements.txt --target build-tool --verbose
+            echo "Dependencies installed successfully"
+          else
+            echo "No requirements.txt found or file is empty"
           fi
 
           # Add tool lambda code
           cp tool-lambda/tool_lambda_function.py build-tool/
           cp shared/strands_orchestrator.py build-tool/
+          
+          # Debug: Show what's in the build directory
+          echo "Contents of build-tool directory:"
+          ls -la build-tool/
           
           # Clean up unnecessary files to reduce package size
           find build-tool -name "*.pyc" -delete
@@ -90,7 +113,14 @@ jobs:
           find build-tool -name "*.md" -delete
 
           # Zip everything
+          echo "Creating zip file..."
           (cd build-tool && zip -r ../function-tool.zip .)
+          
+          # Verify zip was created
+          if [ ! -f ../function-tool.zip ]; then
+            echo "ERROR: Failed to create function-tool.zip"
+            exit 1
+          fi
           
           # Check package size
           PACKAGE_SIZE=$(du -m ../function-tool.zip | cut -f1)
