@@ -62,7 +62,6 @@ jobs:
           # Add tool lambda code
           cp tool-lambda/tool_lambda_function.py build-tool/
           cp shared/strands_orchestrator.py build-tool/
-          cp -r shared/agents/ build-tool/
 
           # Zip everything
           (cd build-tool && zip -r ../function-tool.zip .)
