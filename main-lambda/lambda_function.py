@@ -6,11 +6,23 @@ import base64
 import logging
 from strands_orchestrator import StrandsAgentOrchestrator
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging for Lambda - this ensures logs show up in CloudWatch
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Remove any existing handlers to avoid duplicate logs
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# Create a formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Create a handler that writes to stdout (Lambda captures this)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+# Get a logger for this module
 logger = logging.getLogger(__name__)
 
 # Now import the rest of your code
@@ -30,9 +42,12 @@ def _get_orchestrator():
     """Get or create the Strands agent orchestrator instance"""
     global _orchestrator
     if _orchestrator is None:
+        print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE ===")
         logger.info("Creating new Strands agent orchestrator instance")
         _orchestrator = StrandsAgentOrchestrator()
+        print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
     else:
+        print("=== REUSING EXISTING ORCHESTRATOR INSTANCE ===")
         logger.debug("Reusing existing Strands agent orchestrator instance")
     return _orchestrator
 
@@ -175,6 +190,7 @@ def _inject_inline_citations(resp, answer):
 
 async def _handle_agent_query(body: dict) -> dict:
     """Handle queries using the multi-agent system"""
+    print("=== ENTERING AGENT QUERY HANDLER ===")
     logger.info("Handling agent query request")
     logger.debug(f"Agent query body: {json.dumps(body, default=str)}")
     
@@ -183,9 +199,11 @@ async def _handle_agent_query(body: dict) -> dict:
         context_text = body.get("context", "")
         query_type = body.get("query_type", "general")
         
+        print(f"=== AGENT QUERY PARAMS: type={query_type}, query_length={len(query)}, context_length={len(context_text)} ===")
         logger.info(f"Processing agent query: type={query_type}, query_length={len(query)}, context_length={len(context_text)}")
         
         if not query:
+            print("=== ERROR: Missing question field ===")
             logger.warning("Agent query missing required 'question' field")
             return {
                 "statusCode": 400,
@@ -193,10 +211,13 @@ async def _handle_agent_query(body: dict) -> dict:
             }
         
         # Route query through Strands agent orchestrator
+        print("=== ROUTING THROUGH STRANDS ORCHESTRATOR ===")
         logger.info("Routing query through Strands agent orchestrator")
         orchestrator = _get_orchestrator()
+        print("=== ORCHESTRATOR OBTAINED, CALLING route_query ===")
         result = await orchestrator.route_query(query, context_text, query_type)
         
+        print(f"=== AGENT QUERY COMPLETED, RESULT LENGTH: {len(str(result))} ===")
         logger.info(f"Agent query completed successfully, result length: {len(str(result))}")
         logger.debug(f"Agent query result: {json.dumps(result, default=str)}")
         
@@ -207,6 +228,7 @@ async def _handle_agent_query(body: dict) -> dict:
         }
         
     except Exception as e:
+        print(f"=== AGENT QUERY FAILED: {str(e)} ===")
         logger.error(f"Failed to process agent query: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
@@ -257,6 +279,11 @@ async def _handle_workflow_execution(body: dict) -> dict:
         }
 
 def handler(event, context):
+    # Force immediate output to ensure we see this
+    print("=== LAMBDA FUNCTION STARTED ===")
+    print(f"Event type: {event.get('httpMethod', 'Unknown')}")
+    print(f"Function: {context.function_name}, Version: {context.function_version}")
+    
     logger.info("Lambda function invoked")
     logger.info(f"Event type: {event.get('httpMethod', 'Unknown')}")
     logger.debug(f"Full event: {json.dumps(event, default=str)}")
@@ -284,6 +311,7 @@ def handler(event, context):
         # Check if this is an agent query or workflow execution
         if body.get("use_agents") or body.get("workflow"):
             logger.info("Request identified as agent/workflow request")
+            print(f"=== USING AGENT/WORKFLOW PATH ===")
             # Use the Strands multi-agent system with AgentCore Gateway
             if body.get("workflow"):
                 logger.info("Executing workflow")
@@ -294,6 +322,7 @@ def handler(event, context):
         
         # Fall back to original Bedrock knowledge base approach
         logger.info("Using Bedrock knowledge base approach")
+        print(f"=== USING BEDROCK KNOWLEDGE BASE PATH ===")
         question = body.get("question")
         context_text = body.get("context")
         
