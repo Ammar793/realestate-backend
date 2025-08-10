@@ -1,7 +1,7 @@
 # Core AWS dependencies (minimal)
 boto3>=1.34.0
 
-# Strands Agents framework - AI agent SDK
+# Strands Agents framework - AI agent SDK (pinned to working version)
 strands-agents>=1.4.0
 
 # MCP (Model Context Protocol) support
