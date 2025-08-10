@@ -16,6 +16,7 @@ python-multipart>=0.0.6
 
 # AWS AgentCore dependencies
 bedrock-agentcore>=0.1.0,<1.0.0
+bedrock-agentcore-starter-toolkit>=0.1.0
 
 # Strands framework dependencies
 strands>=0.1.0
