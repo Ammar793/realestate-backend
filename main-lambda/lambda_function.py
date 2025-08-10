@@ -150,10 +150,10 @@ def _handle_websocket_connect(event: dict) -> dict:
         connection_id = event["requestContext"]["connectionId"]
         logger.info(f"New WebSocket connection: {connection_id}")
         
-        return {"body": "Connected"}
+        return _format_websocket_response(200, "Connected")
     except Exception as e:
         logger.error(f"Error in WebSocket connect: {e}")
-        return {"body": "Connection failed"}
+        return _format_websocket_response(500, "Connection failed")
 
 def _handle_websocket_disconnect(event: dict) -> dict:
     """Handle WebSocket disconnection"""
