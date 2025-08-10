@@ -42,7 +42,6 @@ jobs:
           # Add main lambda code
           cp main-lambda/lambda_function.py build-main/
           cp shared/strands_orchestrator.py build-main/
-          cp -r shared/agents/ build-main/
 
           # Zip everything
           (cd build-main && zip -r ../function-main.zip .)
