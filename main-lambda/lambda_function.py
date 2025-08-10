@@ -94,16 +94,65 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
             "timestamp": time.time()
         }, domain, stage)
         
-        # Execute the query
+        # Create a progress callback function to stream thinking updates
+        thinking_messages = []
+        
+        def progress_callback(message_type: str, message: str, metadata: dict):
+            """Callback function to receive progress updates from the orchestrator"""
+            try:
+                # Create a thinking update message
+                thinking_update = {
+                    "type": "thinking",
+                    "message_type": message_type,
+                    "message": message,
+                    "metadata": metadata,
+                    "timestamp": time.time()
+                }
+                
+                # Store the message for later reference
+                thinking_messages.append(thinking_update)
+                
+                # Send the thinking update to the WebSocket client
+                _send_websocket_message(connection_id, thinking_update, domain, stage)
+                
+                logger.info(f"Sent thinking update: {message_type} - {message}")
+                
+            except Exception as e:
+                logger.error(f"Error in progress callback: {e}")
+        
+        # Execute the query with progress streaming
         try:
             orchestrator = _get_orchestrator()
+            
+            # Set the progress callback to receive thinking updates
+            orchestrator.set_progress_callback(progress_callback)
+            
+            # Send initial thinking status
+            _send_websocket_message(connection_id, {
+                "type": "thinking",
+                "message_type": "start",
+                "message": "Starting analysis of your query...",
+                "metadata": {"query": query, "query_type": query_type},
+                "timestamp": time.time()
+            }, domain, stage)
+            
             result = await orchestrator.route_query(query, context, query_type)
             
             if result.get("success"):
+                # Send completion thinking status
+                _send_websocket_message(connection_id, {
+                    "type": "thinking",
+                    "message_type": "complete",
+                    "message": "Analysis completed successfully!",
+                    "metadata": {"status": "success"},
+                    "timestamp": time.time()
+                }, domain, stage)
+                
                 # Send the complete result
                 _send_websocket_message(connection_id, {
                     "type": "result",
                     "data": result,
+                    "thinking_process": thinking_messages,  # Include the thinking process
                     "timestamp": time.time()
                 }, domain, stage)
                 
@@ -114,18 +163,39 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
                     "timestamp": time.time()
                 }, domain, stage)
             else:
+                # Send error thinking status
+                _send_websocket_message(connection_id, {
+                    "type": "thinking",
+                    "message_type": "error",
+                    "message": "Analysis encountered an error",
+                    "metadata": {"error": result.get("error", "Unknown error occurred")},
+                    "timestamp": time.time()
+                }, domain, stage)
+                
                 # Send error result
                 _send_websocket_message(connection_id, {
                     "type": "error",
                     "error": result.get("error", "Unknown error occurred"),
+                    "thinking_process": thinking_messages,  # Include the thinking process even for errors
                     "timestamp": time.time()
                 }, domain, stage)
                 
         except Exception as e:
             logger.error(f"Error executing query: {e}")
+            
+            # Send error thinking status
+            _send_websocket_message(connection_id, {
+                "type": "thinking",
+                "message_type": "error",
+                "message": "System error occurred during execution",
+                "metadata": {"error": str(e)},
+                "timestamp": time.time()
+            }, domain, stage)
+            
             _send_websocket_message(connection_id, {
                 "type": "error",
                 "error": f"Failed to execute query: {str(e)}",
+                "thinking_process": thinking_messages,  # Include any thinking process that occurred
                 "timestamp": time.time()
             }, domain, stage)
         
@@ -375,6 +445,31 @@ async def _handle_agent_query(body: dict) -> dict:
         print(f"=== ORCHESTRATOR DEBUG INFO: {debug_info} ===")
         logger.info(f"Orchestrator debug info: {debug_info}")
         
+        # Create a progress callback for HTTP requests (logs progress but doesn't stream)
+        thinking_messages = []
+        
+        def progress_callback(message_type: str, message: str, metadata: dict):
+            """Progress callback for HTTP requests - logs progress for debugging"""
+            try:
+                thinking_update = {
+                    "type": "thinking",
+                    "message_type": message_type,
+                    "message": message,
+                    "metadata": metadata,
+                    "timestamp": time.time()
+                }
+                thinking_messages.append(thinking_update)
+                
+                # Log the thinking progress for HTTP requests
+                logger.info(f"Agent thinking progress: {message_type} - {message}")
+                print(f"=== THINKING PROGRESS: {message_type} - {message} ===")
+                
+            except Exception as e:
+                logger.error(f"Error in HTTP progress callback: {e}")
+        
+        # Set the progress callback
+        orchestrator.set_progress_callback(progress_callback)
+        
         print("=== CALLING route_query METHOD ===")
         logger.info("Calling orchestrator.route_query() method")
         result = await orchestrator.route_query(query, context_text, query_type)
@@ -390,6 +485,10 @@ async def _handle_agent_query(body: dict) -> dict:
             print(f"=== TOOLS AVAILABLE: {result.get('tools_available', 'Unknown')} ===")
             print(f"=== TOOLS USED: {result.get('tools_used', 'Unknown')} ===")
             logger.info(f"Result success: {result.get('success')}, agent: {result.get('agent')}, tools_available: {result.get('tools_available')}, tools_used: {result.get('tools_used')}")
+        
+        # Include thinking process in the response for HTTP requests
+        if isinstance(result, dict):
+            result["thinking_process"] = thinking_messages
         
         return {
             "statusCode": 200,
@@ -431,10 +530,39 @@ async def _handle_workflow_execution(body: dict) -> dict:
         # Execute workflow through Strands agent orchestrator
         logger.info("Executing workflow through Strands agent orchestrator")
         orchestrator = _get_orchestrator()
+        
+        # Create a progress callback for workflow execution
+        thinking_messages = []
+        
+        def progress_callback(message_type: str, message: str, metadata: dict):
+            """Progress callback for workflow execution - logs progress for debugging"""
+            try:
+                thinking_update = {
+                    "type": "thinking",
+                    "message_type": message_type,
+                    "message": message,
+                    "metadata": metadata,
+                    "timestamp": time.time()
+                }
+                thinking_messages.append(thinking_update)
+                
+                # Log the workflow progress
+                logger.info(f"Workflow progress: {message_type} - {message}")
+                
+            except Exception as e:
+                logger.error(f"Error in workflow progress callback: {e}")
+        
+        # Set the progress callback
+        orchestrator.set_progress_callback(progress_callback)
+        
         result = await orchestrator.execute_workflow(workflow_name, parameters)
         
         logger.info(f"Workflow execution completed successfully, result length: {len(str(result))}")
         logger.debug(f"Workflow execution result: {json.dumps(result, default=str)}")
+        
+        # Include thinking process in the response
+        if isinstance(result, dict):
+            result["thinking_process"] = thinking_messages
         
         return {
             "statusCode": 200,

@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable, Optional
 from strands import Agent
 from strands.models import BedrockModel
 from strands.tools.mcp.mcp_client import MCPClient
@@ -21,6 +21,7 @@ class StrandsAgentOrchestrator:
         self.mcp_client = None
         self.gateway_tools = []
         self.agent_tools = {}  # Initialize agent_tools dict
+        self.progress_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
         
         # Load AgentCore configuration
         logger.info("Loading AgentCore configuration...")
@@ -44,6 +45,28 @@ class StrandsAgentOrchestrator:
         
         logger.info("=== STRANDS ORCHESTRATOR INITIALIZATION COMPLETE ===")
         logger.info(f"Final status: {len(self.agents)} agents, {len(self.gateway_tools)} tools, MCP client: {self.mcp_client is not None}")
+    
+    def set_progress_callback(self, callback: Callable[[str, str, Dict[str, Any]], None]):
+        """Set a callback function to receive progress updates during agent execution
+        
+        Args:
+            callback: Function that takes (message_type, message, metadata) parameters
+                     message_type: 'thinking', 'tool_call', 'step_complete', etc.
+                     message: Human-readable message about what's happening
+                     metadata: Additional context data
+        """
+        self.progress_callback = callback
+        logger.info("Progress callback set for orchestrator")
+    
+    def _send_progress(self, message_type: str, message: str, metadata: Dict[str, Any] = None):
+        """Send progress update through the callback if set"""
+        if self.progress_callback:
+            try:
+                self.progress_callback(message_type, message, metadata or {})
+            except Exception as e:
+                logger.error(f"Error in progress callback: {e}")
+        else:
+            logger.debug(f"Progress update (no callback): {message_type}: {message}")
     
     def _load_agentcore_config(self) -> Dict[str, Any]:
         """Load AgentCore Gateway configuration"""
@@ -413,9 +436,21 @@ class StrandsAgentOrchestrator:
             logger.info(f"Context: {context}")
             logger.info(f"Query Type: {query_type}")
             
+            # Send initial progress update
+            self._send_progress("thinking", "Analyzing your query and determining the best approach...", {
+                "query": query,
+                "query_type": query_type,
+                "context_length": len(context)
+            })
+            
             # Determine which agent to use based on query type
             target_agent_name = self._select_agent_for_query(query, query_type)
             logger.info(f"Selected agent: {target_agent_name}")
+            
+            self._send_progress("thinking", f"Selected {target_agent_name} agent for this query type", {
+                "selected_agent": target_agent_name,
+                "query_type": query_type
+            })
             
             if target_agent_name not in self.agents:
                 logger.error(f"Agent {target_agent_name} not found in available agents: {list(self.agents.keys())}")
@@ -433,6 +468,10 @@ class StrandsAgentOrchestrator:
             
             if agent_tools_count > 0:
                 logger.info(f"Available tools for {target_agent_name}: {[tool.tool_name for tool in self.agent_tools[target_agent_name]]}")
+                self._send_progress("thinking", f"Agent has access to {agent_tools_count} specialized tools for analysis", {
+                    "tools_available": [tool.tool_name for tool in self.agent_tools[target_agent_name]],
+                    "agent": target_agent_name
+                })
             
             # Create the full query with context and tool invocation limits
             full_query = f"Query: {query}"
@@ -447,6 +486,11 @@ class StrandsAgentOrchestrator:
             logger.info(f"Full query to send to agent: {full_query}")
             logger.info(f"=== EXECUTING AGENT {target_agent_name} ===")
             
+            self._send_progress("thinking", f"Executing {target_agent_name} agent with your query...", {
+                "agent": target_agent_name,
+                "query_length": len(query)
+            })
+            
             # Execute the agent - it now has tools and can execute them directly
             try:
                 logger.info(f"Calling agent.invoke() with query...")
@@ -454,6 +498,11 @@ class StrandsAgentOrchestrator:
                 # If the agent has tools, execute within MCP client context
                 if agent_tools_count > 0 and self.mcp_client:
                     logger.info(f"Agent has {agent_tools_count} tools, executing within MCP client context")
+                    
+                    self._send_progress("thinking", "Setting up tool execution environment...", {
+                        "agent": target_agent_name,
+                        "mcp_client": True
+                    })
                     
                     # Ensure MCP client is healthy before execution
                     if not self.ensure_mcp_client_context():
@@ -468,6 +517,10 @@ class StrandsAgentOrchestrator:
                     try:
                         with self.mcp_client:
                             logger.info("MCP client context entered for agent execution")
+                            self._send_progress("thinking", "Agent is now processing your query with available tools...", {
+                                "agent": target_agent_name,
+                                "status": "executing"
+                            })
                             response = target_agent(full_query)
                             logger.info("Agent execution completed within MCP context")
                     except Exception as mcp_error:
@@ -475,14 +528,28 @@ class StrandsAgentOrchestrator:
                         logger.error(f"MCP error type: {type(mcp_error)}")
                         logger.error(f"MCP error details: {str(mcp_error)}")
                         
+                        self._send_progress("thinking", "Encountered an issue with the tool execution environment, attempting to recover...", {
+                            "agent": target_agent_name,
+                            "error": str(mcp_error),
+                            "status": "recovering"
+                        })
+                        
                         # Check for specific MCP client errors
                         if "MCPClientInitializationError" in str(type(mcp_error)) or "client session is not running" in str(mcp_error):
                             logger.error("Detected MCP client session issue - attempting to reinitialize")
                             # Try to reinitialize the MCP client
                             try:
+                                self._send_progress("thinking", "Reinitializing tool execution environment...", {
+                                    "agent": target_agent_name,
+                                    "status": "reinitializing"
+                                })
                                 self._setup_agentcore_gateway()
                                 if self.mcp_client:
                                     logger.info("MCP client reinitialized, retrying agent execution")
+                                    self._send_progress("thinking", "Tool environment recovered, retrying execution...", {
+                                        "agent": target_agent_name,
+                                        "status": "retrying"
+                                    })
                                     with self.mcp_client:
                                         response = target_agent(full_query)
                                         logger.info("Agent execution completed after MCP client reinitialization")
@@ -505,12 +572,21 @@ class StrandsAgentOrchestrator:
                         raise mcp_error
                 else:
                     logger.info("Agent has no tools or no MCP client, executing normally")
+                    self._send_progress("thinking", "Agent is processing your query using knowledge and reasoning...", {
+                        "agent": target_agent_name,
+                        "tools_available": False
+                    })
                     response = target_agent(full_query)
                     logger.info("Agent execution completed normally")
                 
                 logger.info(f"Agent execution completed successfully")
                 logger.info(f"Response type: {type(response)}")
                 logger.info(f"Response attributes: {dir(response)}")
+                
+                self._send_progress("thinking", "Agent has completed processing, analyzing the results...", {
+                    "agent": target_agent_name,
+                    "status": "analyzing"
+                })
                 
                 # Extract content from response
                 if hasattr(response, 'content'):
@@ -543,6 +619,12 @@ class StrandsAgentOrchestrator:
                 
                 logger.info(f"Tools used in execution: {tools_used}")
                 
+                if tools_used > 0:
+                    self._send_progress("thinking", f"Agent used {tools_used} tools to gather information and provide insights", {
+                        "agent": target_agent_name,
+                        "tools_used": tools_used
+                    })
+                
                 # Check for other response attributes
                 if hasattr(response, 'stop_reason'):
                     logger.info(f"Stop reason: {response.stop_reason}")
@@ -550,6 +632,11 @@ class StrandsAgentOrchestrator:
                     logger.info(f"Execution metrics: {response.metrics}")
                 if hasattr(response, 'state'):
                     logger.info(f"Final state: {response.state}")
+                
+                self._send_progress("thinking", "Finalizing response and preparing results for you...", {
+                    "agent": target_agent_name,
+                    "status": "finalizing"
+                })
                 
                 return {
                     "success": True,
@@ -566,6 +653,13 @@ class StrandsAgentOrchestrator:
                 logger.error(f"Error executing agent {target_agent_name}: {agent_error}")
                 logger.error(f"Error type: {type(agent_error)}")
                 logger.error(f"Error details: {str(agent_error)}")
+                
+                self._send_progress("thinking", f"Encountered an error during execution: {str(agent_error)}", {
+                    "agent": target_agent_name,
+                    "error": str(agent_error),
+                    "status": "error"
+                })
+                
                 import traceback
                 logger.error(f"Full traceback: {traceback.format_exc()}")
                 return {
@@ -579,6 +673,12 @@ class StrandsAgentOrchestrator:
         except Exception as e:
             logger.error(f"Error routing query: {e}")
             logger.error(f"Error type: {type(e)}")
+            
+            self._send_progress("thinking", f"System error occurred: {str(e)}", {
+                "error": str(e),
+                "status": "system_error"
+            })
+            
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return {
@@ -611,17 +711,57 @@ class StrandsAgentOrchestrator:
         workflow = self.workflows[workflow_name]
         logger.info(f"Executing workflow: {workflow_name}")
         
+        self._send_progress("thinking", f"Starting workflow execution: {workflow_name}", {
+            "workflow": workflow_name,
+            "parameters": parameters,
+            "total_steps": len(workflow["steps"])
+        })
+        
         # Execute workflow steps
         results = {}
-        for step in workflow["steps"]:
+        for i, step in enumerate(workflow["steps"]):
             agent_name = step["agent"]
             action = step["action"]
+            
+            self._send_progress("thinking", f"Executing step {i+1}/{len(workflow['steps'])}: {action} using {agent_name} agent", {
+                "workflow": workflow_name,
+                "step_number": i + 1,
+                "total_steps": len(workflow["steps"]),
+                "agent": agent_name,
+                "action": action
+            })
             
             if agent_name in self.agents:
                 agent = self.agents[agent_name]
                 # Execute the action (this will be enhanced with AgentCore tools)
                 result = await self._execute_agent_action(agent, action, parameters)
                 results[action] = result
+                
+                self._send_progress("thinking", f"Completed step {i+1}: {action} - {'Success' if result.get('success') else 'Failed'}", {
+                    "workflow": workflow_name,
+                    "step_number": i + 1,
+                    "total_steps": len(workflow["steps"]),
+                    "agent": agent_name,
+                    "action": action,
+                    "result": result
+                })
+            else:
+                error_msg = f"Agent {agent_name} not found for step {action}"
+                self._send_progress("thinking", error_msg, {
+                    "workflow": workflow_name,
+                    "step_number": i + 1,
+                    "total_steps": len(workflow["steps"]),
+                    "agent": agent_name,
+                    "action": action,
+                    "error": "Agent not found"
+                })
+                results[action] = {"success": False, "error": error_msg}
+        
+        self._send_progress("thinking", f"Workflow {workflow_name} completed successfully", {
+            "workflow": workflow_name,
+            "total_steps": len(workflow["steps"]),
+            "status": "completed"
+        })
         
         return {
             "workflow": workflow_name,
@@ -632,6 +772,12 @@ class StrandsAgentOrchestrator:
     async def _execute_agent_action(self, agent: Agent, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an action on a specific agent"""
         try:
+            self._send_progress("thinking", f"Preparing to execute action: {action} with {agent.name} agent", {
+                "agent": agent.name,
+                "action": action,
+                "parameters": parameters
+            })
+            
             # Create the action prompt with parameters and tool invocation limits
             action_prompt = f"Execute action: {action}"
             if parameters:
@@ -648,6 +794,12 @@ class StrandsAgentOrchestrator:
                 if agent_tools_count > 0 and self.mcp_client:
                     logger.info(f"Agent {agent.name} has {agent_tools_count} tools, executing within MCP client context")
                     
+                    self._send_progress("thinking", f"Agent {agent.name} has {agent_tools_count} tools available for action execution", {
+                        "agent": agent.name,
+                        "action": action,
+                        "tools_available": agent_tools_count
+                    })
+                    
                     # Ensure MCP client is healthy before execution
                     if not self.ensure_mcp_client_context():
                         logger.error("Failed to ensure healthy MCP client context for agent action")
@@ -661,18 +813,42 @@ class StrandsAgentOrchestrator:
                     try:
                         with self.mcp_client:
                             logger.info("MCP client context entered for agent action execution")
+                            self._send_progress("thinking", f"Executing action '{action}' with {agent.name} agent using available tools...", {
+                                "agent": agent.name,
+                                "action": action,
+                                "status": "executing"
+                            })
                             response = agent(action_prompt)
                             logger.info("Agent action execution completed within MCP context")
                     except Exception as mcp_error:
                         logger.error(f"MCP client context error: {mcp_error}")
                         logger.error(f"MCP error type: {type(mcp_error)}")
+                        
+                        self._send_progress("thinking", f"Encountered MCP client error during action execution: {str(mcp_error)}", {
+                            "agent": agent.name,
+                            "action": action,
+                            "error": str(mcp_error),
+                            "status": "mcp_error"
+                        })
+                        
                         import traceback
                         logger.error(f"MCP error traceback: {traceback.format_exc()}")
                         raise mcp_error
                 else:
                     logger.info(f"Agent {agent.name} has no tools or no MCP client, executing normally")
+                    self._send_progress("thinking", f"Executing action '{action}' with {agent.name} agent using knowledge and reasoning...", {
+                        "agent": agent.name,
+                        "action": action,
+                        "tools_available": False
+                    })
                     response = agent(action_prompt)
                     logger.info("Agent action execution completed normally")
+                
+                self._send_progress("thinking", f"Action '{action}' completed, analyzing results...", {
+                    "agent": agent.name,
+                    "action": action,
+                    "status": "analyzing"
+                })
                 
                 # Check for tools used
                 tools_used = 0
@@ -696,30 +872,61 @@ class StrandsAgentOrchestrator:
                 
                 logger.info(f"Tools used in execution: {tools_used}")
                 
+                if tools_used > 0:
+                    self._send_progress("thinking", f"Agent {agent.name} used {tools_used} tools to execute action '{action}'", {
+                        "agent": agent.name,
+                        "action": action,
+                        "tools_used": tools_used
+                    })
+                
+                self._send_progress("thinking", f"Action '{action}' results prepared successfully", {
+                    "agent": agent.name,
+                    "action": action,
+                    "status": "completed"
+                })
+                
                 return {
                     "success": True,
                     "content": response.content if hasattr(response, 'content') else str(response),
                     "agent": agent.name,
                     "action": action,
                     "parameters": parameters,
-                    "tools_available": len(self.agent_tools.get(agent.name, [])),
                     "tools_used": tools_used
                 }
                 
-            except Exception as agent_error:
-                logger.error(f"Error executing action {action} on agent {agent.name}: {agent_error}")
+            except Exception as action_error:
+                logger.error(f"Error executing action {action} with agent {agent.name}: {action_error}")
+                
+                self._send_progress("thinking", f"Error executing action '{action}': {str(action_error)}", {
+                    "agent": agent.name,
+                    "action": action,
+                    "error": str(action_error),
+                    "status": "error"
+                })
+                
                 return {
                     "success": False,
-                    "error": f"Agent action execution failed: {str(agent_error)}",
+                    "error": f"Action execution failed: {str(action_error)}",
                     "agent": agent.name,
-                    "action": action
+                    "action": action,
+                    "parameters": parameters
                 }
-            
+                
         except Exception as e:
-            logger.error(f"Error executing agent action: {e}")
+            logger.error(f"Error in _execute_agent_action: {e}")
+            
+            self._send_progress("thinking", f"System error in agent action execution: {str(e)}", {
+                "agent": agent.name if 'agent' in locals() else "unknown",
+                "action": action,
+                "error": str(e),
+                "status": "system_error"
+            })
+            
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"System error: {str(e)}",
+                "agent": agent.name if 'agent' in locals() else "unknown",
+                "action": action
             }
     
     def get_system_status(self) -> Dict[str, Any]:
