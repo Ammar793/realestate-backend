@@ -1,8 +1,12 @@
 # Core AWS dependencies (minimal)
 boto3>=1.34.0
 
+# HTTP requests for Cognito authentication
+requests>=2.31.0
+
 # Strands Agents framework - AI agent SDK (pinned to working version)
 strands-agents>=1.4.0
+strands-agents-tools>=0.2.2
 
 # MCP (Model Context Protocol) support
 mcp>=0.1.0 

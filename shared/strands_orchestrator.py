@@ -108,22 +108,49 @@ class StrandsAgentOrchestrator:
         #     self.agent_system.add_agent(agent)
     
     def _setup_agentcore_gateway(self):
-        """Setup connection to AgentCore Gateway"""
-        if not self.config.get("gateway_url") or not self.config.get("access_token"):
-            logger.warning("AgentCore Gateway not configured. Agents will run without tools.")
+        """Setup connection to AgentCore Gateway with Cognito authentication"""
+        if not self.config.get("gateway_url"):
+            logger.warning("AgentCore Gateway URL not configured. Agents will run without tools.")
             return
         
         try:
-            # Create MCP client for AgentCore Gateway
-            def create_streamable_http_transport(mcp_url: str, access_token: str):
-                return streamablehttp_client(mcp_url, headers={"Authorization": f"Bearer {access_token}"})
+            # Try to get Cognito authenticator
+            from shared.cognito_auth import create_cognito_authenticator_from_config, create_cognito_authenticator_from_env
             
-            self.mcp_client = MCPClient(
-                lambda: create_streamable_http_transport(
-                    self.config["gateway_url"], 
-                    self.config["access_token"]
+            # First try from config, then from environment
+            cognito_auth = create_cognito_authenticator_from_config(self.config)
+            if not cognito_auth:
+                cognito_auth = create_cognito_authenticator_from_env()
+            
+            if cognito_auth:
+                logger.info("Using Cognito authentication for AgentCore Gateway")
+                
+                # Create MCP client with Cognito authentication
+                def create_streamable_http_transport(mcp_url: str):
+                    headers = cognito_auth.get_auth_headers()
+                    return streamablehttp_client(mcp_url, headers=headers)
+                
+                self.mcp_client = MCPClient(
+                    lambda: create_streamable_http_transport(self.config["gateway_url"])
                 )
-            )
+                
+            else:
+                # Fallback to legacy access token if available
+                if self.config.get("access_token"):
+                    logger.info("Using legacy access token for AgentCore Gateway")
+                    
+                    def create_streamable_http_transport(mcp_url: str, access_token: str):
+                        return streamablehttp_client(mcp_url, headers={"Authorization": f"Bearer {access_token}"})
+                    
+                    self.mcp_client = MCPClient(
+                        lambda: create_streamable_http_transport(
+                            self.config["gateway_url"], 
+                            self.config["access_token"]
+                        )
+                    )
+                else:
+                    logger.warning("No authentication method available for AgentCore Gateway")
+                    return
             
             # Get tools from gateway
             self._load_gateway_tools()

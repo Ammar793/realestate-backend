@@ -5,6 +5,7 @@
   "cognito_client_info": {
     "client_id": "your-cognito-client-id",
     "client_secret": "your-cognito-client-secret",
+    "token_url": "https://your-domain.auth.us-west-2.amazoncognito.com/oauth2/token",
     "user_pool_id": "your-user-pool-id",
     "identity_pool_id": "your-identity-pool-id"
   },

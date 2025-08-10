@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script for Amazon Bedrock AgentCore Gateway
+Setup script for Amazon Bedrock AgentCore Gateway with Cognito Authentication
 Based on AWS documentation: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-quick-start.html
 """
 import json
@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def setup_agentcore_gateway():
-    """Set up the AgentCore Gateway with Lambda targets (no authentication for testing)"""
+    """Set up the AgentCore Gateway with Lambda targets and Cognito authentication"""
     
     # Get configuration from environment
     region = os.getenv("AWS_REGION", "us-west-2")
@@ -30,11 +30,21 @@ def setup_agentcore_gateway():
         client = GatewayClient(region_name=region)
         client.logger.setLevel(logging.DEBUG)
         
-        # Create the gateway without authentication for testing
-        logger.info("Creating MCP Gateway without authentication...")
+        # Create the gateway with Cognito authentication
+        logger.info("Creating MCP Gateway with Cognito authentication...")
         gateway = client.create_mcp_gateway(
             name=gateway_name,
-            enable_semantic_search=True
+            enable_semantic_search=True,
+            # Add authentication configuration
+            authentication_configuration={
+                "type": "oauth2",
+                "oauth2_configuration": {
+                    "authorization_server": "cognito",
+                    "client_id": os.getenv("COGNITO_CLIENT_ID"),
+                    "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
+                    "token_endpoint": os.getenv("COGNITO_TOKEN_URL")
+                }
+            }
         )
         logger.info(f"Gateway created successfully: {gateway['gatewayId']}")
         
@@ -117,12 +127,19 @@ def setup_agentcore_gateway():
         )
         logger.info(f"Lambda target created successfully: {lambda_target['targetId']}")
         
-        # Save configuration (no auth tokens needed)
+        # Save configuration with Cognito info
         config = {
             "gateway_id": gateway["gatewayId"],
             "gateway_url": gateway["gatewayUrl"],
             "target_id": lambda_target["targetId"],
-            "region": region
+            "region": region,
+            "cognito_client_info": {
+                "client_id": os.getenv("COGNITO_CLIENT_ID"),
+                "client_secret": os.getenv("COGNITO_CLIENT_SECRET"),
+                "token_url": os.getenv("COGNITO_TOKEN_URL"),
+                "user_pool_id": os.getenv("COGNITO_USER_POOL_ID"),
+                "identity_pool_id": os.getenv("COGNITO_IDENTITY_POOL_ID")
+            }
         }
         
         with open("agentcore_config.json", "w") as f:
@@ -131,6 +148,7 @@ def setup_agentcore_gateway():
         logger.info("Configuration saved to agentcore_config.json")
         logger.info(f"Gateway URL: {gateway['gatewayUrl']}")
         logger.info(f"Gateway ID: {gateway['gatewayId']}")
+        logger.info("Gateway configured with Cognito authentication")
         
         return config
         
@@ -138,14 +156,17 @@ def setup_agentcore_gateway():
         logger.error(f"Error setting up AgentCore Gateway: {e}")
         raise
 
-def list_gateway_tools(gateway_url: str):
-    """List all available tools in the gateway (no authentication required)"""
+def list_gateway_tools(gateway_url: str, access_token: str = None):
+    """List all available tools in the gateway with optional authentication"""
     try:
         from strands.tools.mcp.mcp_client import MCPClient
         from mcp.client.streamable_http import streamablehttp_client
         
-        def create_streamable_http_transport(mcp_url: str):
-            return streamablehttp_client(mcp_url)  # No auth headers needed
+        def create_streamable_http_transport(mcp_url: str, auth_token: str = None):
+            if auth_token:
+                return streamablehttp_client(mcp_url, headers={"Authorization": f"Bearer {auth_token}"})
+            else:
+                return streamablehttp_client(mcp_url)  # No auth headers
         
         def get_full_tools_list(client):
             more_tools = True
@@ -161,7 +182,7 @@ def list_gateway_tools(gateway_url: str):
                     pagination_token = tmp_tools.pagination_token
             return tools
         
-        mcp_client = MCPClient(lambda: create_streamable_http_transport(gateway_url))
+        mcp_client = MCPClient(lambda: create_streamable_http_transport(gateway_url, access_token))
         
         with mcp_client:
             tools = get_full_tools_list(mcp_client)
@@ -174,13 +195,41 @@ def list_gateway_tools(gateway_url: str):
         logger.error(f"Error listing gateway tools: {e}")
         return []
 
+def test_cognito_connection():
+    """Test the Cognito connection and get a test token"""
+    try:
+        from shared.cognito_auth import create_cognito_authenticator_from_env
+        
+        auth = create_cognito_authenticator_from_env()
+        if auth:
+            logger.info("Testing Cognito connection...")
+            token = auth.get_valid_token()
+            logger.info(f"Successfully obtained test token: {token[:20]}...")
+            return token
+        else:
+            logger.warning("Cognito authenticator not available")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Cognito connection test failed: {e}")
+        return None
+
 if __name__ == "__main__":
     try:
         config = setup_agentcore_gateway()
         
-        # Test listing tools
-        logger.info("Testing tool listing...")
-        list_gateway_tools(config["gateway_url"])
+        # Test Cognito connection
+        logger.info("Testing Cognito connection...")
+        test_token = test_cognito_connection()
+        
+        if test_token:
+            # Test listing tools with authentication
+            logger.info("Testing tool listing with authentication...")
+            list_gateway_tools(config["gateway_url"], test_token)
+        else:
+            # Test listing tools without authentication
+            logger.info("Testing tool listing without authentication...")
+            list_gateway_tools(config["gateway_url"])
         
         logger.info("AgentCore Gateway setup completed successfully!")
         logger.info("You can now use this gateway with your Strands agents.")
