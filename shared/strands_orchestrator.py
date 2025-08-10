@@ -18,6 +18,7 @@ class StrandsAgentOrchestrator:
         self.agents: Dict[str, Agent] = {}
         self.mcp_client = None
         self.gateway_tools = []
+        self.agent_tools = {}  # Initialize agent_tools dict
         
         # Load AgentCore configuration
         self.config = self._load_agentcore_config()
@@ -53,19 +54,20 @@ class StrandsAgentOrchestrator:
             streaming=False,
         )
         
-        # Create agents (simplified without AgentSystem)
+        # Create agents without tools initially - tools will be added after gateway setup
         self.agents["supervisor"] = Agent(
             name="supervisor",
             description="Coordinates and routes queries to appropriate agents",
             system_prompt="""You are a supervisor agent that coordinates real estate analysis tasks. 
             Route queries to the appropriate specialized agents and synthesize their responses.
-            Use the available tools to perform analysis and provide comprehensive insights.
+            You have access to powerful tools that you can use directly to perform analysis and provide comprehensive insights.
             
             Available agents:
             - rag: For knowledge base queries and document retrieval
             - property: For property-specific analysis and insights
             - market: For market trends and analysis
             
+            When you have access to tools, use them proactively to gather information and provide data-driven insights.
             Always provide clear, actionable insights and cite your sources when possible.""",
             model=bedrock_model
         )
@@ -75,7 +77,8 @@ class StrandsAgentOrchestrator:
             name="rag",
             description="Handles knowledge base queries and document retrieval",
             system_prompt="""You are a RAG agent specialized in real estate knowledge base queries. 
-            Use the available tools to retrieve and synthesize information from documents.
+            You have access to powerful tools that you can use directly to retrieve and synthesize information from documents.
+            When you have access to tools, use them proactively to search knowledge bases, retrieve documents, and gather information.
             Always provide citations and source information when available.
             Focus on providing accurate, up-to-date information from the knowledge base.""",
             model=bedrock_model
@@ -87,7 +90,8 @@ class StrandsAgentOrchestrator:
             description="Analyzes market trends and provides market insights",
             system_prompt="""You are a market analysis agent. Analyze market trends, 
             provide insights on pricing, and identify market opportunities.
-            Use the available tools to gather market data and perform analysis.
+            You have access to powerful tools that you can use directly to gather market data and perform analysis.
+            When you have access to tools, use them proactively to collect market data, analyze trends, and provide insights.
             Provide data-driven insights with specific metrics and trends.""",
             model=bedrock_model
         )
@@ -98,14 +102,11 @@ class StrandsAgentOrchestrator:
             description="Analyzes individual properties and provides property insights",
             system_prompt="""You are a property analysis agent. Analyze property characteristics, 
             zoning, permits, and provide property-specific recommendations.
-            Use the available tools to gather property data and perform analysis.
+            You have access to powerful tools that you can use directly to gather property data and perform analysis.
+            When you have access to tools, use them proactively to collect property information, analyze zoning data, and gather permit information.
             Focus on practical insights for real estate development and investment.""",
             model=bedrock_model
         )
-        
-        # Remove the AgentSystem.add_agent calls but keep agents in our dict
-        # for agent in self.agents.values():
-        #     self.agent_system.add_agent(agent)
     
     def _setup_agentcore_gateway(self):
         """Setup connection to AgentCore Gateway with Cognito authentication"""
@@ -200,19 +201,39 @@ class StrandsAgentOrchestrator:
             "market_analysis": ["market", "supervisor"]
         }
         
-        for tool in self.gateway_tools:
-            tool_name = tool.tool_name
-            
-            # Find which agents should have this tool
-            target_agents = tool_mapping.get(tool_name, ["supervisor"])
-            
-            for agent_name in target_agents:
-                if agent_name in self.agents:
-                    try:
-                        self.agents[agent_name].add_tool(tool)
-                        logger.info(f"Added tool {tool_name} to agent {agent_name}")
-                    except Exception as e:
-                        logger.error(f"Error adding tool {tool_name} to agent {agent_name}: {e}")
+        # Create new agents with tools for each agent
+        for agent_name in self.agents:
+            if agent_name in self.agents:
+                # Get the original agent
+                original_agent = self.agents[agent_name]
+                
+                # Get tools for this agent
+                agent_tools = []
+                for tool in self.gateway_tools:
+                    tool_name = tool.tool_name
+                    # Find which agents should have this tool
+                    target_agents = tool_mapping.get(tool_name, ["supervisor"])
+                    if agent_name in target_agents:
+                        agent_tools.append(tool)
+                
+                if agent_tools:
+                    # Create a new agent with tools
+                    new_agent = Agent(
+                        name=original_agent.name,
+                        description=original_agent.description,
+                        system_prompt=original_agent.system_prompt,
+                        model=original_agent.model,
+                        tools=agent_tools  # Pass tools during initialization
+                    )
+                    
+                    # Replace the original agent with the new one that has tools
+                    self.agents[agent_name] = new_agent
+                    logger.info(f"Created agent {agent_name} with {len(agent_tools)} tools")
+                    
+                    # Store tool info for reference
+                    if agent_name not in self.agent_tools:
+                        self.agent_tools[agent_name] = []
+                    self.agent_tools[agent_name].extend(agent_tools)
     
     def _setup_workflows(self):
         """Define agent workflows"""
@@ -266,10 +287,8 @@ class StrandsAgentOrchestrator:
             if query_type != "general":
                 full_query += f"\nQuery Type: {query_type}"
             
-            # Execute the agent directly using Strands Agent.__call__ method
+            # Execute the agent - it now has tools and can execute them directly
             try:
-                # Use the agent directly - Strands Agent objects are callable
-                # Remove await since Agent.__call__ returns AgentResult directly
                 response = target_agent(full_query)
                 
                 return {
@@ -277,7 +296,8 @@ class StrandsAgentOrchestrator:
                     "content": response.content if hasattr(response, 'content') else str(response),
                     "agent": target_agent_name,
                     "query_type": query_type,
-                    "tools_used": len(self.gateway_tools),
+                    "tools_available": len(self.agent_tools.get(target_agent_name, [])),
+                    "tools_used": getattr(response, 'tools_used', 0),  # Get tools used from response
                     "selected_agent": target_agent_name
                 }
                 
@@ -346,10 +366,8 @@ class StrandsAgentOrchestrator:
             if parameters:
                 action_prompt += f"\nParameters: {json.dumps(parameters, indent=2)}"
             
-            # Execute the agent directly using Strands Agent.__call__ method
+            # Execute the agent - it now has tools and can execute them directly
             try:
-                # Use the agent directly - Strands Agent objects are callable
-                # Remove await since Agent.__call__ returns AgentResult directly
                 response = agent(action_prompt)
                 
                 return {
@@ -357,7 +375,9 @@ class StrandsAgentOrchestrator:
                     "content": response.content if hasattr(response, 'content') else str(response),
                     "agent": agent.name,
                     "action": action,
-                    "parameters": parameters
+                    "parameters": parameters,
+                    "tools_available": len(self.agent_tools.get(agent.name, [])),
+                    "tools_used": getattr(response, 'tools_used', 0)
                 }
                 
             except Exception as agent_error:
@@ -384,6 +404,7 @@ class StrandsAgentOrchestrator:
             "agents": list(self.agents.keys()),
             "gateway_connected": self.mcp_client is not None,
             "tools_available": len(self.gateway_tools),
+            "agent_tools": {agent: len(tools) for agent, tools in self.agent_tools.items()},
             "workflows": list(self.workflows.keys()),
             "gateway_config": {
                 "url": self.config.get("gateway_url"),
@@ -395,6 +416,55 @@ class StrandsAgentOrchestrator:
         """Get list of available tools from the gateway"""
         tools_info = []
         for tool in self.gateway_tools:
+            tools_info.append({
+                "name": tool.tool_name,
+                "description": tool.description,
+                "input_schema": getattr(tool, 'input_schema', {})
+            })
+        return tools_info
+    
+    async def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a specific tool with given parameters"""
+        if not self.mcp_client:
+            return {"success": False, "error": "AgentCore Gateway not connected"}
+        
+        # Find the tool by name
+        target_tool = None
+        for tool in self.gateway_tools:
+            if tool.tool_name == tool_name:
+                target_tool = tool
+                break
+        
+        if not target_tool:
+            return {"success": False, "error": f"Tool {tool_name} not found"}
+        
+        try:
+            # Execute the tool using MCP client
+            with self.mcp_client:
+                result = self.mcp_client.call_tool_sync(tool_name, parameters)
+                return {
+                    "success": True,
+                    "tool_name": tool_name,
+                    "result": result,
+                    "parameters": parameters
+                }
+        except Exception as e:
+            logger.error(f"Error executing tool {tool_name}: {e}")
+            return {
+                "success": False,
+                "error": f"Tool execution failed: {str(e)}",
+                "tool_name": tool_name
+            }
+    
+
+    
+    def get_agent_tools(self, agent_name: str) -> List[Dict[str, Any]]:
+        """Get tools available for a specific agent"""
+        if agent_name not in self.agent_tools:
+            return []
+        
+        tools_info = []
+        for tool in self.agent_tools[agent_name]:
             tools_info.append({
                 "name": tool.tool_name,
                 "description": tool.description,
