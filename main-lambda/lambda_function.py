@@ -26,8 +26,6 @@ logger.addHandler(handler)
 # Get a logger for this module
 logger = logging.getLogger(__name__)
 
-# Now import the rest of your code
-
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
@@ -96,11 +94,11 @@ def _send_websocket_message(connection_id: str, message: dict, domain: str, stag
         logger.error(f"Failed to send WebSocket message to {connection_id}: {e}")
         return False
 
-async def _stream_agent_response_websocket(connection_id: str, query: str, context: str, query_type: str, 
-                                         domain: str, stage: str) -> None:
-    """Stream agent response to WebSocket client using native Strands streaming"""
+async def _process_sqs_message_and_stream_response(connection_id: str, query: str, context: str, query_type: str, 
+                                                  domain: str, stage: str) -> None:
+    """Process SQS message and stream agent response to WebSocket client"""
     try:
-        logger.info(f"Starting WebSocket streaming for connection {connection_id}")
+        logger.info(f"Starting SQS message processing for connection {connection_id}")
         
         # Send initial status
         _send_websocket_message(connection_id, {
@@ -235,90 +233,60 @@ async def _stream_agent_response_websocket(connection_id: str, query: str, conte
             }, domain, stage)
             
     except Exception as e:
-        logger.error(f"Error in WebSocket streaming: {e}")
+        logger.error(f"Error in SQS message processing: {e}")
         logger.error(f"Error type: {type(e)}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         _send_websocket_message(connection_id, {
             "type": "error",
-            "error": f"WebSocket streaming failed: {str(e)}",
+            "error": f"SQS message processing failed: {str(e)}",
             "timestamp": time.time()
         }, domain, stage)
 
-def _format_websocket_response(status_code: int, body: str) -> dict:
-    """Format WebSocket response to ensure it's valid for API Gateway"""
-    return {
-        "statusCode": int(status_code),
-        "body": str(body)
-    }
 
-def _handle_websocket_connect(event: dict) -> dict:
-    """Handle WebSocket connection"""
+async def _process_sqs_message(sqs_event: dict) -> None:
+    """Process SQS message and stream response to WebSocket"""
     try:
-        connection_id = event["requestContext"]["connectionId"]
-        logger.info(f"New WebSocket connection: {connection_id}")
+        logger.info("Processing SQS message")
         
-        return _format_websocket_response(200, "Connected")
+        # Process each record in the SQS event
+        for record in sqs_event.get('Records', []):
+            try:
+                # Parse the message body
+                message_body = json.loads(record.get('body', '{}'))
+                logger.info(f"Processing SQS message: {list(message_body.keys())}")
+                
+                # Extract message details
+                connection_id = message_body.get('connection_id')
+                domain = message_body.get('domain')
+                stage = message_body.get('stage')
+                question = message_body.get('question')
+                context = message_body.get('context', '')
+                query_type = message_body.get('query_type', 'general')
+                
+                if not all([connection_id, domain, stage, question]):
+                    logger.error(f"Missing required fields in SQS message: {message_body}")
+                    continue
+                
+                logger.info(f"Processing query for connection {connection_id}: {len(question)} characters")
+                
+                # Process the message and stream response
+                await _process_sqs_message_and_stream_response(
+                    connection_id, question, context, query_type, domain, stage
+                )
+                
+                logger.info(f"Successfully processed SQS message for connection {connection_id}")
+                
+            except Exception as e:
+                logger.error(f"Error processing SQS record: {e}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                continue
+                
     except Exception as e:
-        logger.error(f"Error in WebSocket connect: {e}")
-        return _format_websocket_response(500, "Connection failed")
-
-def _handle_websocket_disconnect(event: dict) -> dict:
-    """Handle WebSocket disconnection"""
-    try:
-        connection_id = event["requestContext"]["connectionId"]
-        logger.info(f"WebSocket disconnected: {connection_id}")
-        
-        return _format_websocket_response(200, "Disconnected")
-    except Exception as e:
-        logger.error(f"Error in WebSocket disconnect: {e}")
-        return _format_websocket_response(500, "Disconnect failed")
-
-async def _handle_websocket_invoke(event: dict) -> dict:
-    """Handle invoke action from WebSocket client"""
-    try:
-        connection_id = event["requestContext"]["connectionId"]
-        domain = event["requestContext"]["domainName"]
-        stage = event["requestContext"]["stage"]
-        
-        # Parse the message body
-        body = event.get("body", "{}")
-        if isinstance(body, str):
-            body = json.loads(body)
-        
-        # Extract query parameters
-        query = body.get("question", "")
-        context = body.get("context", "")
-        query_type = body.get("query_type", "general")
-        
-        if not query:
-            return _format_websocket_response(400, "Question is required")
-        
-        logger.info(f"Processing WebSocket invoke request: connection_id={connection_id}, query_length={len(query)}")
-        
-        # IMPORTANT: For Lambda, we need to wait for the streaming to complete
-        # Lambda functions terminate when the handler returns, so background tasks get killed
-        logger.info("Starting agent response streaming (will wait for completion)")
-        await _stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage)
-        
-        logger.info("Agent response streaming completed successfully")
-        return _format_websocket_response(200, "Query processing completed")
-        
-    except Exception as e:
-        logger.error(f"Error handling WebSocket invoke: {e}")
-        return _format_websocket_response(500, f"Failed to process invoke: {str(e)}")
-
-def _handle_websocket_default(event: dict) -> dict:
-    """Handle default/unrecognized WebSocket actions"""
-    try:
-        connection_id = event["requestContext"]["connectionId"]
-        logger.warning(f"Unrecognized WebSocket action for connection {connection_id}")
-        
-        return _format_websocket_response(400, "Unrecognized action")
-    except Exception as e:
-        logger.error(f"Error in WebSocket default handler: {e}")
-        return _format_websocket_response(500, "Handler error")
-
+        logger.error(f"Error in SQS message processing: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
 
 def _build_reference_numbers(resp):
     """
@@ -675,6 +643,21 @@ async def _async_handler(event, context):
         return {"statusCode": 200, "headers": _cors_headers(), "body": ""}
 
     try:
+        # Check if this is an SQS event
+        if event.get("Records") and event["Records"][0].get("eventSource") == "aws:sqs":
+            logger.info("Request identified as SQS event")
+            print(f"=== USING SQS PATH ===")
+            
+            # Process SQS message and stream response to WebSocket
+            await _process_sqs_message(event)
+            
+            # Return success response for SQS processing
+            return {
+                "statusCode": 200,
+                "body": "SQS message processed successfully"
+            }
+        
+        # Handle HTTP requests (agent queries, workflows, debug)
         body = event.get("body") or "{}"
         logger.debug(f"Raw body: {body}")
         
@@ -706,36 +689,6 @@ async def _async_handler(event, context):
             print(f"=== USING DEBUG PATH ===")
             return await _handle_debug_request(body)
         
-        # Check if this is a WebSocket event
-        elif event.get("requestContext", {}).get("routeKey"):
-            logger.info("Request identified as WebSocket event")
-            print(f"=== USING WEBSOCKET PATH ===")
-            
-            route_key = event["requestContext"]["routeKey"]
-            logger.info(f"WebSocket route: {route_key}")
-            logger.info(f"WebSocket event structure: {json.dumps(event.get('requestContext', {}), default=str)}")
-            
-            # Route to appropriate WebSocket handler
-            if route_key == "$connect":
-                logger.info("Handling WebSocket connect event")
-                result = _handle_websocket_connect(event)
-                logger.info(f"WebSocket connect result: {result}")
-                return result
-            elif route_key == "$disconnect":
-                logger.info("Handling WebSocket disconnect event")
-                result = _handle_websocket_disconnect(event)
-                logger.info(f"WebSocket disconnect result: {result}")
-                return result
-            elif route_key == "invoke":
-                logger.info("Handling WebSocket invoke event")
-                result = await _handle_websocket_invoke(event)
-                logger.info(f"WebSocket invoke result: {result}")
-                return result
-            else:
-                logger.info(f"Handling WebSocket default event for route: {route_key}")
-                result = _handle_websocket_default(event)
-                logger.info(f"WebSocket default result: {result}")
-                return result
         else:
             logger.info("Request identified as default HTTP request")
             print(f"=== USING DEFAULT HTTP PATH ===")

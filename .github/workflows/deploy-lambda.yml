@@ -1,5 +1,14 @@
 name: Deploy Lambda Functions
 
+# This workflow deploys three Lambda functions:
+# 1. selador-realestate-backend (main lambda) - processes SQS messages and streams responses
+# 2. selador-websocket-handler (websocket handler) - handles WebSocket connections and queues messages
+# 3. selador-realestate-tools (tool lambda) - handles tool-specific operations
+#
+# Required GitHub repository variables:
+# - SQS_QUEUE_URL: URL of the SQS queue for WebSocket message processing
+# - All other variables from the existing configuration
+
 on:
   push:
     branches: [ "main" ]
@@ -94,6 +103,73 @@ jobs:
           # Check package size (informational only - S3 handles large packages)
           PACKAGE_SIZE=$(du -m function-main.zip | cut -f1)
           echo "Main lambda package size: ${PACKAGE_SIZE}MB"
+
+      - name: Build websocket handler lambda deployment zip
+        run: |
+          set -euo pipefail
+          rm -rf build-websocket function-websocket.zip
+          mkdir -p build-websocket
+
+          # Install dependencies
+          python -m pip install --upgrade pip
+          echo "Installing dependencies from websocket-handler-lambda/requirements.txt..."
+          echo "Requirements file contents:"
+          cat websocket-handler-lambda/requirements.txt || echo "No requirements.txt found"
+          
+          if [ -f websocket-handler-lambda/requirements.txt ] && [ -s websocket-handler-lambda/requirements.txt ]; then
+            echo "Starting pip install..."
+            pip install -r websocket-handler-lambda/requirements.txt --target build-websocket --verbose
+            echo "Dependencies installed successfully"
+            
+            # Show what was installed
+            echo "Installed packages in build-websocket:"
+            ls -la build-websocket/ || echo "build-websocket directory not found"
+          else
+            echo "No requirements.txt found or file is empty"
+          fi
+
+          # Add websocket handler lambda code
+          cp websocket-handler-lambda/websocket_handler.py build-websocket/
+          # Copy all shared modules
+          cp -r shared/* build-websocket/
+          
+          # Debug: Show what's in the build directory
+          echo "Contents of build-websocket directory:"
+          ls -la build-websocket/
+          
+          # Check if directory has content
+          if [ -z "$(ls -A build-websocket)" ]; then
+            echo "ERROR: build-websocket directory is empty!"
+            exit 1
+          fi
+
+          # Show final contents before zipping
+          echo "Final contents before zipping:"
+          ls -la build-websocket/
+          
+          # Check if zip command is available
+          if ! command -v zip &> /dev/null; then
+            echo "ERROR: zip command not found. Installing zip..."
+            apt-get update && apt-get install -y zip
+          fi
+          
+          # Zip everything with verbose output
+          echo "Creating zip file..."
+          cd build-websocket
+          zip -r ../function-websocket.zip . -v
+          cd ..
+          
+          # Verify zip was created
+          if [ ! -f function-websocket.zip ]; then
+            echo "ERROR: Failed to create function-websocket.zip"
+            echo "Current directory contents:"
+            ls -la
+            exit 1
+          fi
+          
+          # Check package size (informational only - S3 handles large packages)
+          PACKAGE_SIZE=$(du -m function-websocket.zip | cut -f1)
+          echo "WebSocket handler lambda package size: ${PACKAGE_SIZE}MB"
 
       - name: Build tool lambda deployment zip
         run: |
@@ -209,6 +285,29 @@ jobs:
             --environment file://env-main.json \
             --layers arn:aws:lambda:us-west-2:184161586896:layer:opentelemetry-python-0_15_0:1
 
+      - name: Create env JSON for websocket handler lambda
+        run: |
+          # Note: SQS_QUEUE_URL must be set in GitHub repository variables
+          # Go to Settings > Secrets and variables > Actions > Variables
+          # Add SQS_QUEUE_URL with your SQS queue URL
+          cat > env-websocket.json <<'EOF'
+          {
+            "Variables": {
+              "SQS_QUEUE_URL": "${{ vars.SQS_QUEUE_URL }}",
+              "LOG_LEVEL": "INFO",
+              "LOG_FORMAT": "json",
+              "LOG_DESTINATION": "cloudwatch"
+            }
+          }
+          EOF
+
+      - name: Update websocket handler lambda environment variables
+        run: |
+          aws lambda update-function-configuration \
+            --function-name selador-websocket-handler \
+            --environment file://env-websocket.json \
+            --timeout 30 \
+            --memory-size 256
 
       - name: Create env JSON for tool lambda
         run: |
@@ -256,15 +355,18 @@ jobs:
           
           # Clean up old artifacts (keep last 5 versions)
           aws s3 ls s3://jls-lambda-artifacts/lambda/ | grep "main-function" | sort -r | tail -n +6 | awk '{print $4}' | xargs -I {} aws s3 rm s3://jls-lambda-artifacts/lambda/{} || true
+          aws s3 ls s3://jls-lambda-artifacts/lambda/ | grep "websocket-function" | sort -r | tail -n +6 | awk '{print $4}' | xargs -I {} aws s3 rm s3://jls-lambda-artifacts/lambda/{} || true
           aws s3 ls s3://jls-lambda-artifacts/lambda/ | grep "tool-function" | sort -r | tail -n +6 | awk '{print $4}' | xargs -I {} aws s3 rm s3://jls-lambda-artifacts/lambda/{} || true
           
           # Upload deployment packages with timestamp
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           aws s3 cp function-main.zip s3://jls-lambda-artifacts/lambda/main-function-${TIMESTAMP}.zip
+          aws s3 cp function-websocket.zip s3://jls-lambda-artifacts/lambda/websocket-function-${TIMESTAMP}.zip
           aws s3 cp function-tool.zip s3://jls-lambda-artifacts/lambda/tool-function-${TIMESTAMP}.zip
           
           # Also upload as latest versions
           aws s3 cp function-main.zip s3://jls-lambda-artifacts/lambda/main-function.zip
+          aws s3 cp function-websocket.zip s3://jls-lambda-artifacts/lambda/websocket-function.zip
           aws s3 cp function-tool.zip s3://jls-lambda-artifacts/lambda/tool-function.zip
           
           echo "Packages uploaded to S3 successfully with timestamp: ${TIMESTAMP}"
@@ -278,6 +380,14 @@ jobs:
             --s3-key lambda/main-function.zip \
             --publish
           aws lambda wait function-updated --function-name selador-realestate-backend
+          
+          # Update websocket handler lambda from S3
+          aws lambda update-function-code \
+            --function-name selador-websocket-handler \
+            --s3-bucket jls-lambda-artifacts \
+            --s3-key lambda/websocket-function.zip \
+            --publish
+          aws lambda wait function-updated --function-name selador-websocket-handler
           
           # Update tool lambda from S3
           aws lambda update-function-code \

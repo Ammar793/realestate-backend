@@ -1,5 +1,30 @@
 #!/bin/bash
 
+# DEPRECATED: This script is no longer used
+# Use deploy-all-lambdas.sh instead for the new architecture
+#
+# The new architecture separates WebSocket handling from message processing:
+# - WebSocket Handler Lambda: handles connections and queues messages (30s timeout)
+# - Main Lambda: processes messages from SQS and streams responses (15min timeout)
+#
+# To deploy both lambdas, run: ./deploy-all-lambdas.sh
+
+echo "⚠️  DEPRECATED: This script is no longer used!"
+echo ""
+echo "The new architecture requires two separate lambdas:"
+echo "1. WebSocket Handler Lambda (websocket-handler-lambda/)"
+echo "2. Main Lambda (main-lambda/)"
+echo ""
+echo "To deploy both lambdas, use the new deployment script:"
+echo "  ./deploy-all-lambdas.sh"
+echo ""
+echo "For more information, see: WEBSOCKET_ARCHITECTURE_README.md"
+echo ""
+echo "Exiting without deployment..."
+
+exit 1
+
+# Original script content below (kept for reference)
 # Deploy WebSocket-enabled Lambda function for Selador Real Estate Backend
 # This script packages and deploys the updated main-lambda function
 
