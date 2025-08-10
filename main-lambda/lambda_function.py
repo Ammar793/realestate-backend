@@ -2,7 +2,10 @@ import json
 import os
 import boto3
 import asyncio
+import base64
 from strands_orchestrator import StrandsAgentOrchestrator
+
+# Now import the rest of your code
 
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
@@ -210,7 +213,6 @@ def handler(event, context):
     try:
         body = event.get("body") or "{}"
         if event.get("isBase64Encoded"):
-            import base64
             body = json.loads(base64.b64decode(body))
         else:
             body = json.loads(body)

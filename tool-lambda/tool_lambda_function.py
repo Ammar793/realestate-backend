@@ -4,6 +4,8 @@ import boto3
 import asyncio
 from strands_orchestrator import StrandsAgentOrchestrator
 
+# Now import the rest of your code
+
 # Reuse client across invocations
 _bedrock = boto3.client("bedrock-agent-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
