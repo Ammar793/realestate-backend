@@ -54,6 +54,8 @@ The server sends multiple message types during processing:
 }
 ```
 
+**Note:** The `message` event now includes the actual message content from the agent, allowing clients to display the full message text in real-time.
+
 #### 2. Final Result
 ```json
 {
@@ -70,7 +72,17 @@ The server sends multiple message types during processing:
 }
 ```
 
-#### 3. Error Messages
+#### 3. Message Events
+```json
+{
+  "type": "message",
+  "role": "assistant",
+  "content": "The actual message content from the agent...",
+  "timestamp": 1234567890.123
+}
+```
+
+#### 4. Error Messages
 ```json
 {
   "type": "error",

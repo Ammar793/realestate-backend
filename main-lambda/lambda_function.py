@@ -183,9 +183,18 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         # New message created
                         message = event["message"]
                         logger.info(f"Sending message event: role={message.get('role', 'unknown')}")
+                        
+                        # Extract message content if available
+                        message_content = None
+                        if hasattr(message, 'content'):
+                            message_content = message.content
+                        elif isinstance(message, dict) and 'content' in message:
+                            message_content = message['content']
+                        
                         _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
+                            "content": message_content,
                             "timestamp": current_time
                         }, domain, stage)
                         
