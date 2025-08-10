@@ -213,13 +213,32 @@ async def _handle_agent_query(body: dict) -> dict:
         # Route query through Strands agent orchestrator
         print("=== ROUTING THROUGH STRANDS ORCHESTRATOR ===")
         logger.info("Routing query through Strands agent orchestrator")
+        
+        print("=== GETTING ORCHESTRATOR INSTANCE ===")
         orchestrator = _get_orchestrator()
-        print("=== ORCHESTRATOR OBTAINED, CALLING route_query ===")
+        print("=== ORCHESTRATOR OBTAINED SUCCESSFULLY ===")
+        
+        # Get debug info before execution
+        print("=== GETTING ORCHESTRATOR DEBUG INFO ===")
+        debug_info = orchestrator.get_debug_info()
+        print(f"=== ORCHESTRATOR DEBUG INFO: {debug_info} ===")
+        logger.info(f"Orchestrator debug info: {debug_info}")
+        
+        print("=== CALLING route_query METHOD ===")
+        logger.info("Calling orchestrator.route_query() method")
         result = await orchestrator.route_query(query, context_text, query_type)
         
         print(f"=== AGENT QUERY COMPLETED, RESULT LENGTH: {len(str(result))} ===")
         logger.info(f"Agent query completed successfully, result length: {len(str(result))}")
         logger.debug(f"Agent query result: {json.dumps(result, default=str)}")
+        
+        # Log the result details
+        if isinstance(result, dict):
+            print(f"=== RESULT SUCCESS: {result.get('success', 'Unknown')} ===")
+            print(f"=== RESULT AGENT: {result.get('agent', 'Unknown')} ===")
+            print(f"=== TOOLS AVAILABLE: {result.get('tools_available', 'Unknown')} ===")
+            print(f"=== TOOLS USED: {result.get('tools_used', 'Unknown')} ===")
+            logger.info(f"Result success: {result.get('success')}, agent: {result.get('agent')}, tools_available: {result.get('tools_available')}, tools_used: {result.get('tools_used')}")
         
         return {
             "statusCode": 200,
@@ -230,6 +249,8 @@ async def _handle_agent_query(body: dict) -> dict:
     except Exception as e:
         print(f"=== AGENT QUERY FAILED: {str(e)} ===")
         logger.error(f"Failed to process agent query: {str(e)}", exc_info=True)
+        import traceback
+        print(f"=== FULL TRACEBACK: {traceback.format_exc()} ===")
         return {
             "statusCode": 500,
             "headers": _cors_headers(),
@@ -278,6 +299,80 @@ async def _handle_workflow_execution(body: dict) -> dict:
             "body": json.dumps({"error": "Failed to execute workflow", "details": str(e)})
         }
 
+async def _handle_debug_request(body: dict) -> dict:
+    """Handle debug requests to test tool execution and orchestrator state"""
+    print("=== ENTERING DEBUG HANDLER ===")
+    logger.info("Handling debug request")
+    
+    try:
+        debug_type = body.get("debug_type", "status")
+        
+        print(f"=== DEBUG TYPE: {debug_type} ===")
+        logger.info(f"Debug request type: {debug_type}")
+        
+        orchestrator = _get_orchestrator()
+        
+        if debug_type == "status":
+            # Get orchestrator status
+            debug_info = orchestrator.get_debug_info()
+            print(f"=== DEBUG STATUS: {debug_info} ===")
+            return {
+                "statusCode": 200,
+                "headers": {**_cors_headers(), "Content-Type": "application/json"},
+                "body": json.dumps(debug_info)
+            }
+            
+        elif debug_type == "test_tool":
+            # Test a specific tool
+            tool_name = body.get("tool_name", "")
+            parameters = body.get("parameters", {})
+            
+            if not tool_name:
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"error": "tool_name is required for tool testing"})
+                }
+            
+            print(f"=== TESTING TOOL: {tool_name} ===")
+            logger.info(f"Testing tool: {tool_name} with parameters: {parameters}")
+            
+            result = orchestrator.debug_tool_execution(tool_name, parameters)
+            print(f"=== TOOL TEST RESULT: {result} ===")
+            
+            return {
+                "statusCode": 200,
+                "headers": {**_cors_headers(), "Content-Type": "application/json"},
+                "body": json.dumps(result)
+            }
+            
+        elif debug_type == "list_tools":
+            # List all available tools
+            tools_info = orchestrator.get_available_tools()
+            print(f"=== AVAILABLE TOOLS: {tools_info} ===")
+            
+            return {
+                "statusCode": 200,
+                "headers": {**_cors_headers(), "Content-Type": "application/json"},
+                "body": json.dumps({"tools": tools_info})
+            }
+            
+        else:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": f"Unknown debug type: {debug_type}"})
+            }
+            
+    except Exception as e:
+        print(f"=== DEBUG REQUEST FAILED: {str(e)} ===")
+        logger.error(f"Failed to process debug request: {str(e)}", exc_info=True)
+        import traceback
+        print(f"=== FULL TRACEBACK: {traceback.format_exc()} ===")
+        return {
+            "statusCode": 500,
+            "headers": _cors_headers(),
+            "body": json.dumps({"error": "Failed to process debug request", "details": str(e)})
+        }
+
 def handler(event, context):
     # Force immediate output to ensure we see this
     print("=== LAMBDA FUNCTION STARTED ===")
@@ -319,6 +414,12 @@ def handler(event, context):
             else:
                 logger.info("Processing agent query")
                 return asyncio.run(_handle_agent_query(body))
+        
+        # Check if this is a debug request
+        elif body.get("debug_type"):
+            logger.info("Request identified as debug request")
+            print(f"=== USING DEBUG PATH ===")
+            return asyncio.run(_handle_debug_request(body))
         
         # Fall back to original Bedrock knowledge base approach
         logger.info("Using Bedrock knowledge base approach")
