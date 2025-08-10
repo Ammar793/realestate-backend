@@ -258,8 +258,10 @@ class StrandsAgentOrchestrator:
             return
         
         logger.info(f"=== DISTRIBUTING {len(self.gateway_tools)} TOOLS TO AGENTS ===")
+        logger.info(f"Available tools: {[tool.tool_name for tool in self.gateway_tools]}")
         
         # Map tools to agents based on functionality
+        # Use partial matching to handle tool names with prefixes
         tool_mapping = {
             "rag_query": ["rag", "supervisor"],
             "property_analysis": ["property", "supervisor"],
@@ -267,6 +269,7 @@ class StrandsAgentOrchestrator:
         }
         
         logger.info(f"Tool mapping: {tool_mapping}")
+        logger.info(f"Tool mapping keys: {list(tool_mapping.keys())}")
         
         # Create new agents with tools for each agent
         for agent_name in self.agents:
@@ -281,8 +284,15 @@ class StrandsAgentOrchestrator:
                 for tool in self.gateway_tools:
                     tool_name = tool.tool_name
                     logger.info(f"Checking tool: {tool_name}")
-                    # Find which agents should have this tool
-                    target_agents = tool_mapping.get(tool_name, ["supervisor"])
+                    
+                    # Find which agents should have this tool using partial matching
+                    target_agents = ["supervisor"]  # Default to supervisor
+                    for mapping_key, agents in tool_mapping.items():
+                        if mapping_key in tool_name:
+                            target_agents = agents
+                            logger.info(f"Tool {tool_name} matches mapping key '{mapping_key}' -> targets agents: {target_agents}")
+                            break
+                    
                     logger.info(f"Tool {tool_name} targets agents: {target_agents}")
                     if agent_name in target_agents:
                         agent_tools.append(tool)
