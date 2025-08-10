@@ -166,7 +166,7 @@ def _handle_websocket_disconnect(event: dict) -> dict:
         logger.error(f"Error in WebSocket disconnect: {e}")
         return _format_websocket_response(500, "Disconnect failed")
 
-def _handle_websocket_invoke(event: dict) -> dict:
+async def _handle_websocket_invoke(event: dict) -> dict:
     """Handle invoke action from WebSocket client"""
     try:
         connection_id = event["requestContext"]["connectionId"]
@@ -524,7 +524,7 @@ async def _handle_debug_request(body: dict) -> dict:
             "body": json.dumps({"error": "Failed to process debug request", "details": str(e)})
         }
 
-def handler(event, context):
+async def _async_handler(event, context):
     # Force immediate output to ensure we see this
     print("=== LAMBDA FUNCTION STARTED ===")
     print(f"Event type: {event.get('httpMethod', 'Unknown')}")
@@ -561,16 +561,16 @@ def handler(event, context):
             # Use the Strands multi-agent system with AgentCore Gateway
             if body.get("workflow"):
                 logger.info("Executing workflow")
-                return asyncio.run(_handle_workflow_execution(body))
+                return await _handle_workflow_execution(body)
             else:
                 logger.info("Processing agent query")
-                return asyncio.run(_handle_agent_query(body))
+                return await _handle_agent_query(body)
         
         # Check if this is a debug request
         elif body.get("debug_type"):
             logger.info("Request identified as debug request")
             print(f"=== USING DEBUG PATH ===")
-            return asyncio.run(_handle_debug_request(body))
+            return await _handle_debug_request(body)
         
         # Check if this is a WebSocket event
         elif event.get("requestContext", {}).get("routeKey"):
@@ -594,7 +594,7 @@ def handler(event, context):
                 return result
             elif route_key == "invoke":
                 logger.info("Handling WebSocket invoke event")
-                result = _handle_websocket_invoke(event)
+                result = await _handle_websocket_invoke(event)
                 logger.info(f"WebSocket invoke result: {result}")
                 return result
             else:
@@ -690,3 +690,7 @@ def handler(event, context):
             "headers": _cors_headers(),
             "body": json.dumps({"error": "Failed to process request", "details": str(e)})
         }
+
+def handler(event, context):
+    """Synchronous wrapper for the async handler"""
+    return asyncio.run(_async_handler(event, context))
