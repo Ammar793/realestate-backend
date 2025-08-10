@@ -256,7 +256,8 @@ async def _handle_tool_execution(body: dict) -> dict:
     logger.info("Handling tool execution request")
     try:
         tool_name = body.get("tool_name")
-        parameters = body.get("parameters", {})
+        # Filter out tool_name from parameters since it's not a tool parameter
+        parameters = {k: v for k, v in body.items() if k != "tool_name"}
         
         logger.info(f"Tool execution: tool_name='{tool_name}', parameters={parameters}")
         
@@ -302,28 +303,32 @@ def handler(event, context):
     logger.info(f"Event: {event}")
     logger.info(f"Context: {context.function_name}")
     
-    # Handle CORS preflight
-    if event.get("httpMethod") == "OPTIONS":
-        logger.info("Handling CORS preflight")
-        return {"statusCode": 200, "headers": _cors_headers(), "body": ""}
-
     try:
         logger.info("Processing request body")
-        body = event.get("body") or "{}"
-        if event.get("isBase64Encoded"):
-            logger.info("Decoding base64 body")
-            import base64
-            body = json.loads(base64.b64decode(body))
-        else:
-            logger.info("Parsing JSON body")
-            body = json.loads(body)
-
+        # The event itself is the body when coming from AgentCore Gateway
+        body = event if isinstance(event, dict) else {}
+        
         logger.info(f"Request body: {body}")
 
         # Handle tool execution requests
         if body.get("tool_name"):
             logger.info(f"Executing tool: {body.get('tool_name')}")
             return asyncio.run(_handle_tool_execution(body))
+        
+        # Check if tool_name is in the parameters (new schema structure)
+        if isinstance(body, dict) and any(key in body for key in ["query", "address", "location"]):
+            # Extract tool_name from the parameters
+            tool_name = body.get("tool_name")
+            if tool_name:
+                logger.info(f"Executing tool from parameters: {tool_name}")
+                return asyncio.run(_handle_tool_execution(body))
+            else:
+                logger.warning("Parameters provided but no tool_name specified")
+                return {
+                    "statusCode": 400,
+                    "headers": _cors_headers(),
+                    "body": json.dumps({"error": "tool_name is required when providing tool parameters"})
+                }
         
         # If no tool_name, return error
         logger.warning("No tool_name provided")

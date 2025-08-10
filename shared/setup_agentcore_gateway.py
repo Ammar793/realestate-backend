@@ -63,6 +63,11 @@ def setup_agentcore_gateway():
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
+                                    "tool_name": {
+                                        "type": "string",
+                                        "enum": ["rag_query", "property_analysis", "market_analysis"],
+                                        "description": "The name of the tool to execute"
+                                    },
                                     "query": {
                                         "type": "string",
                                         "description": "The query to search for in the knowledge base"
@@ -72,30 +77,31 @@ def setup_agentcore_gateway():
                                         "description": "Additional context for the query"
                                     }
                                 },
-                                "required": ["query"]
+                                "required": ["tool_name", "query"]
                             }
                         },
                         {
                             "name": "property_analysis",
-                            "description": "Analyze a specific property for development potential",
+                            "description": "Analyze property characteristics and development potential",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
+                                    "tool_name": {
+                                        "type": "string",
+                                        "enum": ["rag_query", "property_analysis", "market_analysis"],
+                                        "description": "The name of the tool to execute"
+                                    },
                                     "address": {
                                         "type": "string",
-                                        "description": "Property address"
-                                    },
-                                    "property_type": {
-                                        "type": "string",
-                                        "description": "Type of property (residential, commercial, etc.)"
+                                        "description": "Property address for analysis"
                                     },
                                     "analysis_type": {
                                         "type": "string",
-                                        "enum": ["zoning", "permits", "development", "comprehensive"],
+                                        "enum": ["basic", "comprehensive", "development"],
                                         "description": "Type of analysis to perform"
                                     }
                                 },
-                                "required": ["address", "analysis_type"]
+                                "required": ["tool_name", "address"]
                             }
                         },
                         {
@@ -104,6 +110,11 @@ def setup_agentcore_gateway():
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
+                                    "tool_name": {
+                                        "type": "string",
+                                        "enum": ["rag_query", "property_analysis", "market_analysis"],
+                                        "description": "The name of the tool to execute"
+                                    },
                                     "location": {
                                         "type": "string",
                                         "description": "Location for market analysis (city, neighborhood, etc.)"
@@ -118,7 +129,7 @@ def setup_agentcore_gateway():
                                         "description": "Timeframe for market analysis"
                                     }
                                 },
-                                "required": ["location", "property_type"]
+                                "required": ["tool_name", "location", "property_type"]
                             }
                         }
                     ]

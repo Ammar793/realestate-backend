@@ -70,26 +70,26 @@ The CI/CD pipeline will automatically deploy both lambda functions. The tool lam
 ```json
 {
   "tool_name": "rag_query",
-  "parameters": {
-    "query": "What are the zoning requirements for ADUs?",
-    "context": "Property at 123 Main St, Seattle, WA"
-  }
+  "query": "What are the zoning requirements for ADUs?",
+  "context": "Property at 123 Main St, Seattle, WA"
 }
 ```
 
 **Available Tools:**
 
 1. **`rag_query`**
-   - Parameters: `query`, `context`
+   - Parameters: `tool_name`, `query`, `context`
    - Purpose: Knowledge base queries with property context
 
 2. **`property_analysis`**
-   - Parameters: `address`, `analysis_type`
+   - Parameters: `tool_name`, `address`, `analysis_type`
    - Purpose: Property-specific analysis and recommendations
 
 3. **`market_analysis`**
-   - Parameters: `location`, `property_type`, `timeframe`
+   - Parameters: `tool_name`, `location`, `property_type`, `timeframe`
    - Purpose: Market insights and trends
+
+**Note:** The `tool_name` field is now included in the input schema as an enum with values: `["rag_query", "property_analysis", "market_analysis"]`. This field is required for all tool executions and helps the lambda function route the request to the appropriate tool handler.
 
 ## Integration with Main Lambda
 
