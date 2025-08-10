@@ -58,6 +58,158 @@ def _cors_headers():
         "Access-Control-Allow-Methods": "OPTIONS,POST"
     }
 
+def _send_websocket_message(connection_id: str, message: dict, domain: str, stage: str) -> bool:
+    """Send a message to a WebSocket connection via API Gateway Management API"""
+    try:
+        api_gateway_management_api = boto3.client(
+            'apigatewaymanagementapi',
+            endpoint_url=f"https://{domain}/{stage}"
+        )
+        
+        api_gateway_management_api.post_to_connection(
+            ConnectionId=connection_id,
+            Data=json.dumps(message)
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send WebSocket message to {connection_id}: {e}")
+        return False
+
+def _stream_agent_response_websocket(connection_id: str, query: str, context: str, query_type: str, 
+                                   domain: str, stage: str) -> None:
+    """Stream agent response to WebSocket client"""
+    try:
+        # Send initial status
+        _send_websocket_message(connection_id, {
+            "type": "status",
+            "message": "Processing your query...",
+            "timestamp": asyncio.get_event_loop().time()
+        }, domain, stage)
+        
+        # Send "thinking" status
+        _send_websocket_message(connection_id, {
+            "type": "status",
+            "message": "Agent is analyzing your request...",
+            "timestamp": asyncio.get_event_loop().time()
+        }, domain, stage)
+        
+        # Execute the query asynchronously
+        async def execute_query():
+            try:
+                orchestrator = _get_orchestrator()
+                result = await orchestrator.route_query(query, context, query_type)
+                
+                if result.get("success"):
+                    # Send the complete result
+                    _send_websocket_message(connection_id, {
+                        "type": "result",
+                        "data": result,
+                        "timestamp": asyncio.get_event_loop().time()
+                    }, domain, stage)
+                    
+                    # Send completion status
+                    _send_websocket_message(connection_id, {
+                        "type": "status",
+                        "message": "Query completed successfully",
+                        "timestamp": asyncio.get_event_loop().time()
+                    }, domain, stage)
+                else:
+                    # Send error result
+                    _send_websocket_message(connection_id, {
+                        "type": "error",
+                        "error": result.get("error", "Unknown error occurred"),
+                        "timestamp": asyncio.get_event_loop().time()
+                    }, domain, stage)
+                    
+            except Exception as e:
+                logger.error(f"Error executing query: {e}")
+                _send_websocket_message(connection_id, {
+                    "type": "error",
+                    "error": f"Failed to execute query: {str(e)}",
+                    "timestamp": asyncio.get_event_loop().time()
+                }, domain, stage)
+        
+        # Run the async query execution
+        asyncio.create_task(execute_query())
+        
+    except Exception as e:
+        logger.error(f"Error in stream_agent_response_websocket: {e}")
+        _send_websocket_message(connection_id, {
+            "type": "error",
+            "error": f"Failed to start streaming: {str(e)}",
+            "timestamp": asyncio.get_event_loop().time()
+        }, domain, stage)
+
+def _handle_websocket_connect(event: dict) -> dict:
+    """Handle WebSocket connection"""
+    connection_id = event["requestContext"]["connectionId"]
+    logger.info(f"New WebSocket connection: {connection_id}")
+    
+    return {
+        "statusCode": 200,
+        "body": "Connected"
+    }
+
+def _handle_websocket_disconnect(event: dict) -> dict:
+    """Handle WebSocket disconnection"""
+    connection_id = event["requestContext"]["connectionId"]
+    logger.info(f"WebSocket disconnected: {connection_id}")
+    
+    return {
+        "statusCode": 200,
+        "body": "Disconnected"
+    }
+
+def _handle_websocket_invoke(event: dict) -> dict:
+    """Handle invoke action from WebSocket client"""
+    try:
+        connection_id = event["requestContext"]["connectionId"]
+        domain = event["requestContext"]["domainName"]
+        stage = event["requestContext"]["stage"]
+        
+        # Parse the message body
+        body = event.get("body", "{}")
+        if isinstance(body, str):
+            body = json.loads(body)
+        
+        # Extract query parameters
+        query = body.get("question", "")
+        context = body.get("context", "")
+        query_type = body.get("query_type", "general")
+        
+        if not query:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Question is required"})
+            }
+        
+        logger.info(f"Processing WebSocket invoke request: connection_id={connection_id}, query_length={len(query)}")
+        
+        # Start streaming the response
+        _stream_agent_response_websocket(connection_id, query, context, query_type, domain, stage)
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Query processing started", "connection_id": connection_id})
+        }
+        
+    except Exception as e:
+        logger.error(f"Error handling WebSocket invoke: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": f"Failed to process invoke: {str(e)}"})
+        }
+
+def _handle_websocket_default(event: dict) -> dict:
+    """Handle default/unrecognized WebSocket actions"""
+    connection_id = event["requestContext"]["connectionId"]
+    logger.warning(f"Unrecognized WebSocket action for connection {connection_id}")
+    
+    return {
+        "statusCode": 400,
+        "body": json.dumps({"error": "Unrecognized action"})
+    }
+
 
 def _build_reference_numbers(resp):
     """
@@ -421,85 +573,103 @@ def handler(event, context):
             print(f"=== USING DEBUG PATH ===")
             return asyncio.run(_handle_debug_request(body))
         
-        # Fall back to original Bedrock knowledge base approach
-        logger.info("Using Bedrock knowledge base approach")
-        print(f"=== USING BEDROCK KNOWLEDGE BASE PATH ===")
-        question = body.get("question")
-        context_text = body.get("context")
-        
-        logger.info(f"Knowledge base query: question_length={len(question) if question else 0}, context_length={len(context_text) if context_text else 0}")
-        
-        if not question or not context_text:
-            logger.warning("Missing required fields: question or context")
-            return {
-                "statusCode": 400,
-                "headers": _cors_headers(),
-                "body": json.dumps({"error": "Question and context are required"})
-            }
+        # Check if this is a WebSocket event
+        elif event.get("requestContext", {}).get("routeKey"):
+            logger.info("Request identified as WebSocket event")
+            print(f"=== USING WEBSOCKET PATH ===")
+            
+            route_key = event["requestContext"]["routeKey"]
+            logger.info(f"WebSocket route: {route_key}")
+            
+            # Route to appropriate WebSocket handler
+            if route_key == "$connect":
+                return _handle_websocket_connect(event)
+            elif route_key == "$disconnect":
+                return _handle_websocket_disconnect(event)
+            elif route_key == "invoke":
+                return _handle_websocket_invoke(event)
+            else:
+                return _handle_websocket_default(event)
+        else:
+            logger.info("Request identified as default HTTP request")
+            print(f"=== USING DEFAULT HTTP PATH ===")
+            # Fall back to original Bedrock knowledge base approach
+            question = body.get("question")
+            context_text = body.get("context")
+            
+            logger.info(f"Knowledge base query: question_length={len(question) if question else 0}, context_length={len(context_text) if context_text else 0}")
+            
+            if not question or not context_text:
+                logger.warning("Missing required fields: question or context")
+                return {
+                    "statusCode": 400,
+                    "headers": _cors_headers(),
+                    "body": json.dumps({"error": "Question and context are required"})
+                }
 
-        # Build RetrieveAndGenerate request
-        logger.info("Building Bedrock RetrieveAndGenerate request")
-        req = {
-            "input": {"text": question},
-            "retrieveAndGenerateConfiguration": {
-                "type": "KNOWLEDGE_BASE",
-                "knowledgeBaseConfiguration": {
-                "knowledgeBaseId": KB_ID,
-                "modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
-                "retrievalConfiguration": {
-                    "vectorSearchConfiguration": { "numberOfResults": 6 }
-                },
-                "generationConfiguration": {
-                    "promptTemplate": {
-                    "textPromptTemplate": (
-                        # REQUIRED tokens:
-                        "$output_format_instructions$\n"
-                        "User question:\n$query$\n\n"
-                        "Property context (not from KB):\n<context>\n"
-                        f"{context_text}\n"
-                        "</context>\n\n"
-                        "Relevant excerpts from the knowledge base:\n$search_results$\n\n"
-                        "Instructions:\n"
-                        "- Cite specific SMC sections with [1], [2], etc.\n"
-                        "- If information is missing, say so.\n"
-                        "Final answer:"
-                    )
+            # Build RetrieveAndGenerate request
+            logger.info("Building Bedrock RetrieveAndGenerate request")
+            req = {
+                "input": {"text": question},
+                "retrieveAndGenerateConfiguration": {
+                    "type": "KNOWLEDGE_BASE",
+                    "knowledgeBaseConfiguration": {
+                        "knowledgeBaseId": KB_ID,
+                        "modelArn": "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        "retrievalConfiguration": {
+                            "vectorSearchConfiguration": { "numberOfResults": 6 }
+                        },
+                        "generationConfiguration": {
+                            "promptTemplate": {
+                                "textPromptTemplate": (
+                                    # REQUIRED tokens:
+                                    "$output_format_instructions$\n"
+                                    "User question:\n$query$\n\n"
+                                    "Property context (not from KB):\n<context>\n"
+                                    f"{context_text}\n"
+                                    "</context>\n\n"
+                                    "Relevant excerpts from the knowledge base:\n$search_results$\n\n"
+                                    "Instructions:\n"
+                                    "- Cite specific SMC sections with [1], [2], etc.\n"
+                                    "- If information is missing, say so.\n"
+                                    "Final answer:"
+                                )
+                            }
+                        }
                     }
                 }
-                }
-            }
             }
         
-        logger.debug(f"Bedrock request: {json.dumps(req, default=str)}")
-        logger.info("Calling Bedrock retrieveAndGenerate API")
-        
-        resp = _bedrock.retrieve_and_generate(**req)
-        
-        logger.info("Bedrock API call completed successfully")
-        logger.debug(f"Bedrock response keys: {list(resp.keys())}")
+            logger.debug(f"Bedrock request: {json.dumps(req, default=str)}")
+            logger.info("Calling Bedrock retrieveAndGenerate API")
+            
+            resp = _bedrock.retrieve_and_generate(**req)
+            
+            logger.info("Bedrock API call completed successfully")
+            logger.debug(f"Bedrock response keys: {list(resp.keys())}")
 
-        raw_answer = (resp.get("output") or {}).get("text") or ""
-        logger.info(f"Raw answer length: {len(raw_answer)}")
-        logger.debug(f"Raw answer: {raw_answer[:500]}...")
-        
-        answer_with_cites, ordered_refs = _inject_inline_citations(resp, raw_answer)
-        logger.info(f"Answer with citations length: {len(answer_with_cites)}, references count: {len(ordered_refs)}")
+            raw_answer = (resp.get("output") or {}).get("text") or ""
+            logger.info(f"Raw answer length: {len(raw_answer)}")
+            logger.debug(f"Raw answer: {raw_answer[:500]}...")
+            
+            answer_with_cites, ordered_refs = _inject_inline_citations(resp, raw_answer)
+            logger.info(f"Answer with citations length: {len(answer_with_cites)}, references count: {len(ordered_refs)}")
 
-        result = {
-            "answer": answer_with_cites or f'I found relevant info for: "{question}", but no direct model output was returned.',
-            "citations": ordered_refs,  # Now has proper structure with source_link
-            "citation_map": { str(r["id"]): r for r in ordered_refs },
-            "confidence": min(0.95, 0.7 + 0.05 * len(ordered_refs)) if ordered_refs else 0.8
-        }
+            result = {
+                "answer": answer_with_cites or f'I found relevant info for: "{question}", but no direct model output was returned.',
+                "citations": ordered_refs,  # Now has proper structure with source_link
+                "citation_map": { str(r["id"]): r for r in ordered_refs },
+                "confidence": min(0.95, 0.7 + 0.05 * len(ordered_refs)) if ordered_refs else 0.8
+            }
 
-        logger.info(f"Final result prepared: answer_length={len(result['answer'])}, citations={len(result['citations'])}, confidence={result['confidence']}")
-        logger.debug(f"Final result: {json.dumps(result, default=str)}")
+            logger.info(f"Final result prepared: answer_length={len(result['answer'])}, citations={len(result['citations'])}, confidence={result['confidence']}")
+            logger.debug(f"Final result: {json.dumps(result, default=str)}")
 
-        return {
-            "statusCode": 200,
-            "headers": {**_cors_headers(), "Content-Type": "application/json"},
-            "body": json.dumps(result)
-        }
+            return {
+                "statusCode": 200,
+                "headers": {**_cors_headers(), "Content-Type": "application/json"},
+                "body": json.dumps(result)
+            }
 
     except Exception as e:
         logger.error(f"Lambda function failed with error: {str(e)}", exc_info=True)

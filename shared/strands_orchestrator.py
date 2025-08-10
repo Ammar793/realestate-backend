@@ -27,6 +27,10 @@ class StrandsAgentOrchestrator:
         self.config = self._load_agentcore_config()
         logger.info(f"Configuration loaded: {list(self.config.keys())}")
         
+        # Load agent configuration
+        self.max_tool_invocations = int(os.getenv("AGENT_MAX_TOOL_INVOCATIONS", "2"))
+        logger.info(f"Agent max tool invocations: {self.max_tool_invocations}")
+        
         # Initialize the agent system
         logger.info("Setting up agents...")
         self._setup_agents()
@@ -76,9 +80,11 @@ class StrandsAgentOrchestrator:
         self.agents["supervisor"] = Agent(
             name="supervisor",
             description="Coordinates and routes queries to appropriate agents",
-            system_prompt="""You are a supervisor agent that coordinates real estate analysis tasks. 
+            system_prompt=f"""You are a supervisor agent that coordinates real estate analysis tasks. 
             Route queries to the appropriate specialized agents and synthesize their responses.
             You have access to powerful tools that you can use directly to perform analysis and provide comprehensive insights.
+            
+            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
             
             Available agents:
             - rag: For knowledge base queries and document retrieval
@@ -86,7 +92,8 @@ class StrandsAgentOrchestrator:
             - market: For market trends and analysis
             
             When you have access to tools, use them proactively to gather information and provide data-driven insights.
-            Always provide clear, actionable insights and cite your sources when possible.""",
+            Always provide clear, actionable insights and cite your sources when possible.
+            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
             model=bedrock_model
         )
         logger.info("Supervisor agent created")
@@ -96,11 +103,15 @@ class StrandsAgentOrchestrator:
         self.agents["rag"] = Agent(
             name="rag",
             description="Handles knowledge base queries and document retrieval",
-            system_prompt="""You are a RAG agent specialized in real estate knowledge base queries. 
+            system_prompt=f"""You are a RAG agent specialized in real estate knowledge base queries. 
             You have access to powerful tools that you can use directly to retrieve and synthesize information from documents.
+            
+            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
+            
             When you have access to tools, use them proactively to search knowledge bases, retrieve documents, and gather information.
             Always provide citations and source information when available.
-            Focus on providing accurate, up-to-date information from the knowledge base.""",
+            Focus on providing accurate, up-to-date information from the knowledge base.
+            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
             model=bedrock_model
         )
         logger.info("RAG agent created")
@@ -110,11 +121,15 @@ class StrandsAgentOrchestrator:
         self.agents["market"] = Agent(
             name="market",
             description="Analyzes market trends and provides market insights",
-            system_prompt="""You are a market analysis agent. Analyze market trends, 
+            system_prompt=f"""You are a market analysis agent. Analyze market trends, 
             provide insights on pricing, and identify market opportunities.
             You have access to powerful tools that you can use directly to gather market data and perform analysis.
+            
+            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
+            
             When you have access to tools, use them proactively to collect market data, analyze trends, and provide insights.
-            Provide data-driven insights with specific metrics and trends.""",
+            Provide data-driven insights with specific metrics and trends.
+            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
             model=bedrock_model
         )
         logger.info("Market agent created")
@@ -124,11 +139,15 @@ class StrandsAgentOrchestrator:
         self.agents["property"] = Agent(
             name="property",
             description="Analyzes individual properties and provides property insights",
-            system_prompt="""You are a property analysis agent. Analyze property characteristics, 
+            system_prompt=f"""You are a property analysis agent. Analyze property characteristics, 
             zoning, permits, and provide property-specific recommendations.
             You have access to powerful tools that you can use directly to gather property data and perform analysis.
+            
+            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
+            
             When you have access to tools, use them proactively to collect property information, analyze zoning data, and gather permit information.
-            Focus on practical insights for real estate development and investment.""",
+            Focus on practical insights for real estate development and investment.
+            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
             model=bedrock_model
         )
         logger.info("Property agent created")
@@ -415,12 +434,15 @@ class StrandsAgentOrchestrator:
             if agent_tools_count > 0:
                 logger.info(f"Available tools for {target_agent_name}: {[tool.tool_name for tool in self.agent_tools[target_agent_name]]}")
             
-            # Create the full query with context
+            # Create the full query with context and tool invocation limits
             full_query = f"Query: {query}"
             if context:
                 full_query += f"\nContext: {context}"
             if query_type != "general":
                 full_query += f"\nQuery Type: {query_type}"
+            
+            # Add tool invocation limit instruction
+            full_query += f"\n\nIMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations for this query. Use your tools efficiently and strategically."
             
             logger.info(f"Full query to send to agent: {full_query}")
             logger.info(f"=== EXECUTING AGENT {target_agent_name} ===")
@@ -610,10 +632,13 @@ class StrandsAgentOrchestrator:
     async def _execute_agent_action(self, agent: Agent, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an action on a specific agent"""
         try:
-            # Create the action prompt with parameters
+            # Create the action prompt with parameters and tool invocation limits
             action_prompt = f"Execute action: {action}"
             if parameters:
                 action_prompt += f"\nParameters: {json.dumps(parameters, indent=2)}"
+            
+            # Add tool invocation limit instruction
+            action_prompt += f"\n\nIMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations for this action. Use your tools efficiently and strategically."
             
             # Execute the agent - it now has tools and can execute them directly
             try:
