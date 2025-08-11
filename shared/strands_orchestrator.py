@@ -21,6 +21,12 @@ class StrandsAgentOrchestrator:
         self.mcp_client = None
         self.gateway_tools = []
         self.agent_tools = {}  # Initialize agent_tools dict
+
+        self._rag_json_example = (
+            "```json\n"
+            "{ \"tool\":\"rag_query\", \"answer\":\"...\", \"citations\":[...], \"confidence\":0.9 }\n"
+            "```\n"
+        )
         
         # Load AgentCore configuration
         logger.info("Loading AgentCore configuration...")
