@@ -123,6 +123,9 @@ def _send_websocket_message(connection_id: str, message: dict, domain: str, stag
 async def _process_sqs_message_and_stream_response(connection_id: str, query: str, context: str, query_type: str, 
                                                   domain: str, stage: str) -> None:
     """Process SQS message and stream agent response to WebSocket client"""
+
+    citations_buffer = []
+    citation_map_buffer = {}
     try:
         logger.info(f"Starting SQS message processing for connection {connection_id}")
         
@@ -206,38 +209,76 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         }, domain, stage)
                         
                     elif "message" in event:
-                        # New message created
                         message = event["message"]
                         logger.info(f"Sending message event: role={message.get('role', 'unknown')}")
-                        
-                        # Extract message content if available
+
+                        # Extract content
                         message_content = None
                         if hasattr(message, 'content'):
                             message_content = message.content
                         elif isinstance(message, dict) and 'content' in message:
                             message_content = message['content']
-                        
-                        # Try to parse citations from a tool JSON block included by the agent
-                        if isinstance(message_content, str) and message_content:
-                            parsed_obj, citations = _extract_tool_json_and_citations(message_content)
+
+                        def try_parse_and_emit_from_text(txt: str):
+                            nonlocal citations_buffer, citation_map_buffer
+                            parsed_obj, citations = _extract_tool_json_and_citations(txt)
                             if citations:
                                 logger.info(f"Detected citations in agent message: {len(citations)} items")
-                                # If the tool also provided a clean 'answer', prefer to emit it as a text chunk
+                                # If tool provided a clean 'answer', stream that instead of raw JSON
                                 if isinstance(parsed_obj, dict) and 'answer' in parsed_obj:
                                     _send_websocket_message(connection_id, {
                                         "type": "text_chunk",
                                         "data": parsed_obj.get("answer", ""),
                                         "timestamp": current_time
                                     }, domain, stage)
-                                # Emit citations as a dedicated frame
+                                # Emit citations frame
                                 _send_websocket_message(connection_id, {
                                     "type": "citations",
                                     "citations": citations,
                                     "timestamp": current_time
                                 }, domain, stage)
-                                # Optionally stop double-sending the raw JSON block as a message:
-                                # continue  # uncomment if you want to skip forwarding the raw "message"
+                                # cache for final 'result'
+                                citations_buffer = citations
+                                citation_map_buffer = {str(c["id"]): c for c in citations if isinstance(c, dict) and "id" in c}
 
+                        # 1) If it's a simple string, try to parse
+                        if isinstance(message_content, str) and message_content:
+                            try_parse_and_emit_from_text(message_content)
+
+                        # 2) If it's an array (Anthropic style), walk items
+                        elif isinstance(message_content, list):
+                            # Send a friendly string version to UI
+                            pretty_text_parts = []
+                            for item in message_content:
+                                if isinstance(item, dict):
+                                    # Plain text chunks
+                                    if "text" in item and isinstance(item["text"], str):
+                                        pretty_text_parts.append(item["text"])
+                                        try_parse_and_emit_from_text(item["text"])
+
+                                    # Tool result payloads often wrap the JSON you care about
+                                    if "toolResult" in item and isinstance(item["toolResult"], dict):
+                                        tr = item["toolResult"]
+                                        tr_content = tr.get("content")
+                                        if isinstance(tr_content, list):
+                                            # concatenate any text segments inside toolResult
+                                            tr_texts = [seg.get("text", "") for seg in tr_content if isinstance(seg, dict) and "text" in seg]
+                                            combined = "\n".join([t for t in tr_texts if t])
+                                            if combined:
+                                                try_parse_and_emit_from_text(combined)
+
+                            # Forward a simplified message (optional)
+                            safe_text = "\n".join(pretty_text_parts).strip()
+                            if safe_text:
+                                _send_websocket_message(connection_id, {
+                                    "type": "message",
+                                    "role": message.get("role", "unknown"),
+                                    "content": safe_text,
+                                    "timestamp": current_time
+                                }, domain, stage)
+                                continue  # we've sent a cleaned message; skip sending raw below
+
+                        # Fall back: forward raw message content (as before)
                         _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
@@ -246,14 +287,24 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         }, domain, stage)
                         
                     elif "result" in event:
-                        # Final result
                         result = event["result"]
                         logger.info("Sending final result event")
+
+                        # Try to parse citations from the final content as a fallback
+                        final_content = result.content if hasattr(result, 'content') else str(result)
+                        if isinstance(final_content, str):
+                            parsed_obj, parsed_cites = _extract_tool_json_and_citations(final_content)
+                            if parsed_cites and not citations_buffer:
+                                citations_buffer = parsed_cites
+                                citation_map_buffer = {str(c["id"]): c for c in parsed_cites if isinstance(c, dict) and "id" in c}
+
                         _send_websocket_message(connection_id, {
                             "type": "result",
-                            "content": result.content if hasattr(result, 'content') else str(result),
+                            "content": final_content,
                             "agent": stream_event.get("agent", "unknown"),
                             "query_type": stream_event.get("query_type", "general"),
+                            "citations": citations_buffer,            # <—— include them
+                            "citation_map": citation_map_buffer,      # optional, your UI supports it
                             "timestamp": current_time
                         }, domain, stage)
                         
