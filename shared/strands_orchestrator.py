@@ -77,62 +77,58 @@ class StrandsAgentOrchestrator:
         
         # Create agents without tools initially - tools will be added after gateway setup
         logger.info("Creating supervisor agent...")
+        
+        supervisor_prompt = (
+            "You are a supervisor agent that coordinates real estate analysis tasks.\n"
+            "Route queries to the appropriate specialized agents and synthesize their responses.\n"
+            "You have access to powerful tools that you can use directly to perform analysis and provide comprehensive insights.\n\n"
+            f"IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.\n\n"
+            "CRITICAL FOR RAG CITATIONS:\n"
+            "- When you use the `rag_query` tool, you MUST include the tool's raw JSON result, unmodified, in a fenced code block at the END of your reply:\n"
+            + self._rag_json_example +
+            "- Do not paraphrase or reformat the keys or values inside that JSON block.\n"
+            "- Still provide your normal natural-language answer above, but keep that block verbatim.\n"
+            "- If you did not call `rag_query`, do not include any JSON block.\n"
+            "- If the tool returns citations, keep the `[n]` markers in your prose aligned with the array.\n\n"
+            "Available agents:\n"
+            "- rag: For knowledge base queries and document retrieval\n"
+            "- property: For property-specific analysis and insights\n"
+            "- market: For market trends and analysis\n\n"
+            "When you have access to tools, use them proactively to gather information and provide data-driven insights.\n"
+            "Always provide clear, actionable insights and cite your sources when possible.\n"
+            f"Remember: Maximum {self.max_tool_invocations} tool calls per query."
+        )
+        logger.info("Creating supervisor agent...")
         self.agents["supervisor"] = Agent(
             name="supervisor",
             description="Coordinates and routes queries to appropriate agents",
-            system_prompt=f"""You are a supervisor agent that coordinates real estate analysis tasks. 
-            Route queries to the appropriate specialized agents and synthesize their responses.
-            You have access to powerful tools that you can use directly to perform analysis and provide comprehensive insights.
-            
-            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
-            
-            CRITICAL FOR RAG CITATIONS:
-            - When you use the `rag_query` tool, you MUST include the tool's raw JSON result,
-              unmodified, in a fenced code block at the END of your reply:
-              ```json
-              { "tool":"rag_query", "answer":"...", "citations":[...], "confidence":0.9 }
-              ```
-            - Do not paraphrase or reformat the keys or values inside that JSON block.
-            - Still provide your normal natural-language answer above, but keep that block verbatim.
-            - If you did not call `rag_query`, do not include any JSON block.
-            - If the tool returns citations, keep the `[n]` markers in your prose aligned with the array.
-
-            Available agents:
-            - rag: For knowledge base queries and document retrieval
-            - property: For property-specific analysis and insights
-            - market: For market trends and analysis
-            
-            When you have access to tools, use them proactively to gather information and provide data-driven insights.
-            Always provide clear, actionable insights and cite your sources when possible.
-            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
+            system_prompt=supervisor_prompt,
             model=bedrock_model
         )
         logger.info("Supervisor agent created")
         
         # RAG agent for knowledge base queries
         logger.info("Creating RAG agent...")
+        rag_prompt = (
+            "You are a RAG agent specialized in real estate knowledge base queries.\n"
+            "You have access to powerful tools that you can use directly to retrieve and synthesize information from documents.\n\n"
+            f"IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.\n\n"
+            "CRITICAL FOR RAG CITATIONS:\n"
+            "- When you use the `rag_query` tool, include its raw JSON result at the END of your reply in a fenced JSON block exactly as returned:\n"
+            + self._rag_json_example +
+            "- Do not alter the JSON shape or keys.\n"
+            "- Keep your natural-language answer above. Put the JSON block last.\n"
+            "- Only include this block when `rag_query` is actually used.\n\n"
+            "When you have access to tools, use them proactively to search knowledge bases, retrieve documents, and gather information.\n"
+            "Always provide citations and source information when available.\n"
+            "Focus on providing accurate, up-to-date information from the knowledge base.\n"
+            f"Remember: Maximum {self.max_tool_invocations} tool calls per query."
+        )
+        logger.info("Creating RAG agent...")
         self.agents["rag"] = Agent(
             name="rag",
             description="Handles knowledge base queries and document retrieval",
-            system_prompt=f"""You are a RAG agent specialized in real estate knowledge base queries. 
-            You have access to powerful tools that you can use directly to retrieve and synthesize information from documents.
-            
-            IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
-
-            CRITICAL FOR RAG CITATIONS:
-            - When you use the `rag_query` tool, include its raw JSON result at the END of your reply
-              in a fenced JSON block exactly as returned:
-              ```json
-              { "tool":"rag_query", "answer":"...", "citations":[...], "confidence":0.9 }
-              ```
-            - Do not alter the JSON shape or keys.
-            - Keep your natural-language answer above. Put the JSON block last.
-            - Only include this block when `rag_query` is actually used.
-            
-            When you have access to tools, use them proactively to search knowledge bases, retrieve documents, and gather information.
-            Always provide citations and source information when available.
-            Focus on providing accurate, up-to-date information from the knowledge base.
-            Remember: Maximum {self.max_tool_invocations} tool calls per query.""",
+            system_prompt=rag_prompt,
             model=bedrock_model
         )
         logger.info("RAG agent created")
