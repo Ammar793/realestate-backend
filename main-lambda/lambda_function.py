@@ -77,6 +77,32 @@ def _cors_headers():
         "Access-Control-Allow-Methods": "OPTIONS,POST"
     }
 
+def _extract_tool_json_and_citations(text: str):
+    """
+    Extract a JSON object (prefer fenced ```json block) from agent text and return (parsed_obj, citations).
+    Returns (None, None) if nothing parseable is found.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None, None
+    import json, re
+    # 1) Whole-string JSON
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            if obj.get("tool") == "rag_query" or "citations" in obj:
+                return obj, obj.get("citations")
+    except Exception:
+        pass
+    # 2) Fenced block
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if not m:
+        return None, None
+    try:
+        obj = json.loads(m.group(1))
+        return obj, obj.get("citations") if isinstance(obj, dict) else None
+    except Exception:
+        return None, None
+
 def _send_websocket_message(connection_id: str, message: dict, domain: str, stage: str) -> bool:
     """Send a message to a WebSocket connection via API Gateway Management API"""
     try:
@@ -191,6 +217,27 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         elif isinstance(message, dict) and 'content' in message:
                             message_content = message['content']
                         
+                        # Try to parse citations from a tool JSON block included by the agent
+                        if isinstance(message_content, str) and message_content:
+                            parsed_obj, citations = _extract_tool_json_and_citations(message_content)
+                            if citations:
+                                logger.info(f"Detected citations in agent message: {len(citations)} items")
+                                # If the tool also provided a clean 'answer', prefer to emit it as a text chunk
+                                if isinstance(parsed_obj, dict) and 'answer' in parsed_obj:
+                                    _send_websocket_message(connection_id, {
+                                        "type": "text_chunk",
+                                        "data": parsed_obj.get("answer", ""),
+                                        "timestamp": current_time
+                                    }, domain, stage)
+                                # Emit citations as a dedicated frame
+                                _send_websocket_message(connection_id, {
+                                    "type": "citations",
+                                    "citations": citations,
+                                    "timestamp": current_time
+                                }, domain, stage)
+                                # Optionally stop double-sending the raw JSON block as a message:
+                                # continue  # uncomment if you want to skip forwarding the raw "message"
+
                         _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
@@ -467,6 +514,8 @@ async def _handle_agent_query(body: dict) -> dict:
                 "body": json.dumps({
                     "success": True,
                     "content": result.get("content", ""),
+                    "citations": result.get("citations", []),
+                    "confidence": result.get("confidence"),
                     "agent": result.get("agent", "unknown"),
                     "query_type": result.get("query_type", "general"),
                     "tools_available": result.get("tools_available", 0),

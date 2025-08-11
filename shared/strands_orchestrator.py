@@ -86,6 +86,17 @@ class StrandsAgentOrchestrator:
             
             IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
             
+            CRITICAL FOR RAG CITATIONS:
+            - When you use the `rag_query` tool, you MUST include the tool's raw JSON result,
+              unmodified, in a fenced code block at the END of your reply:
+              ```json
+              { "tool":"rag_query", "answer":"...", "citations":[...], "confidence":0.9 }
+              ```
+            - Do not paraphrase or reformat the keys or values inside that JSON block.
+            - Still provide your normal natural-language answer above, but keep that block verbatim.
+            - If you did not call `rag_query`, do not include any JSON block.
+            - If the tool returns citations, keep the `[n]` markers in your prose aligned with the array.
+
             Available agents:
             - rag: For knowledge base queries and document retrieval
             - property: For property-specific analysis and insights
@@ -107,6 +118,16 @@ class StrandsAgentOrchestrator:
             You have access to powerful tools that you can use directly to retrieve and synthesize information from documents.
             
             IMPORTANT: You are limited to a maximum of {self.max_tool_invocations} tool invocations per query. Use your tools efficiently and strategically.
+
+            CRITICAL FOR RAG CITATIONS:
+            - When you use the `rag_query` tool, include its raw JSON result at the END of your reply
+              in a fenced JSON block exactly as returned:
+              ```json
+              { "tool":"rag_query", "answer":"...", "citations":[...], "confidence":0.9 }
+              ```
+            - Do not alter the JSON shape or keys.
+            - Keep your natural-language answer above. Put the JSON block last.
+            - Only include this block when `rag_query` is actually used.
             
             When you have access to tools, use them proactively to search knowledge bases, retrieve documents, and gather information.
             Always provide citations and source information when available.
@@ -669,6 +690,36 @@ class StrandsAgentOrchestrator:
                 else:
                     content = str(response)
                     logger.info(f"Response as string: {content}")
+                # Try to extract citations if the agent included a fenced JSON block
+                citations = None
+                confidence = None
+                def _extract_json_block(s: str):
+                    import re, json as _json
+                    if not isinstance(s, str):
+                        return None
+                    # 1) try whole-string JSON
+                    try:
+                        obj = _json.loads(s)
+                        return obj
+                    except Exception:
+                        pass
+                    # 2) try fenced ```json ... ``` block
+                    m = re.search(r"```json\s*(\{.*?\})\s*```", s, flags=re.DOTALL)
+                    if not m:
+                        return None
+                    try:
+                        return _json.loads(m.group(1))
+                    except Exception:
+                        return None
+
+                parsed = _extract_json_block(content)
+                if isinstance(parsed, dict):
+                    # Accept either explicit tool tag or presence of citations
+                    if parsed.get("tool") == "rag_query" or "citations" in parsed:
+                        citations = parsed.get("citations")
+                        if "answer" in parsed:
+                            content = parsed["answer"]  # prefer tool's exact answer text
+                        confidence = parsed.get("confidence")                    
                 
                 # Check for tools used
                 tools_used = 0
@@ -697,6 +748,8 @@ class StrandsAgentOrchestrator:
                     "content": content,
                     "agent": target_agent_name,
                     "query_type": query_type,
+                    "citations": citations,
+                    "confidence": confidence,
                     "tools_available": agent_tools_count,
                     "tools_used": tools_used,
                     "selected_agent": target_agent_name,
