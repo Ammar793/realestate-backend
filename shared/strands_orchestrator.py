@@ -78,7 +78,7 @@ class StrandsAgentOrchestrator:
             inference_profile_id="anthropic.claude-3-5-sonnet-20241022-v1:0",
             temperature=0.7,
             streaming=True,
-            max_tokens=1200,
+            max_tokens=3000,
         )
         logger.info("Bedrock model created successfully")
         
