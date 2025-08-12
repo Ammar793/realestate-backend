@@ -148,7 +148,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
         logger.info(f"Starting SQS message processing for connection {connection_id}")
         
         # Send initial status
-        _send_websocket_message(connection_id, {
+        await _send_websocket_message(connection_id, {
             "type": "status",
             "message": "Processing your query...",
             "timestamp": time.time()
@@ -174,7 +174,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                 # Check if we're approaching Lambda timeout (leave 30 seconds buffer)
                 if elapsed_time > 870:  # 15 minutes - 30 seconds buffer
                     logger.warning("Approaching Lambda timeout, sending timeout message and stopping")
-                    _send_websocket_message(connection_id, {
+                    await _send_websocket_message(connection_id, {
                         "type": "error",
                         "error": "Query timeout - Lambda execution time limit reached",
                         "timestamp": current_time
@@ -190,7 +190,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                     if "data" in event:
                         # Text generation event - stream text to client
                         logger.info(f"Sending text chunk: {len(event['data'])} characters")
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "text_chunk",
                             "data": event["data"],
                             "timestamp": current_time
@@ -200,7 +200,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         # Tool usage event
                         tool_info = event["current_tool_use"]
                         logger.info(f"Sending tool use event: {tool_info.get('name', 'Unknown')}")
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "tool_use",
                             "tool_name": tool_info.get("name", "Unknown"),
                             "tool_id": tool_info.get("toolUseId", ""),
@@ -211,7 +211,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                     elif "reasoning" in event and event.get("reasoning"):
                         # Reasoning event
                         logger.info("Sending reasoning event")
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "reasoning",
                             "text": event.get("reasoningText", ""),
                             "signature": event.get("reasoning_signature", ""),
@@ -221,7 +221,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                     elif "start" in event and event.get("start"):
                         # New cycle started
                         logger.info("Sending cycle start event")
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "cycle_start",
                             "timestamp": current_time
                         }, domain, stage)
@@ -237,20 +237,20 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         elif isinstance(message, dict) and 'content' in message:
                             message_content = message['content']
 
-                        def try_parse_and_emit_from_text(txt: str):
+                        async def try_parse_and_emit_from_text(txt: str):
                             nonlocal citations_buffer, citation_map_buffer
                             parsed_obj, citations = _extract_tool_json_and_citations(txt)
                             if citations:
                                 logger.info(f"Detected citations in agent message: {len(citations)} items")
                                 # If tool provided a clean 'answer', stream that instead of raw JSON
                                 if isinstance(parsed_obj, dict) and 'answer' in parsed_obj:
-                                    _send_websocket_message(connection_id, {
+                                    await _send_websocket_message(connection_id, {
                                         "type": "text_chunk",
                                         "data": parsed_obj.get("answer", ""),
                                         "timestamp": current_time
                                     }, domain, stage)
                                 # Emit citations frame
-                                _send_websocket_message(connection_id, {
+                                await _send_websocket_message(connection_id, {
                                     "type": "citations",
                                     "citations": citations,
                                     "timestamp": current_time
@@ -261,7 +261,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
 
                         # 1) If it's a simple string, try to parse
                         if isinstance(message_content, str) and message_content:
-                            try_parse_and_emit_from_text(message_content)
+                            await try_parse_and_emit_from_text(message_content)
 
                         # 2) If it's an array (Anthropic style), walk items
                         elif isinstance(message_content, list):
@@ -272,7 +272,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                                     # Plain text chunks
                                     if "text" in item and isinstance(item["text"], str):
                                         pretty_text_parts.append(item["text"])
-                                        try_parse_and_emit_from_text(item["text"])
+                                        await try_parse_and_emit_from_text(item["text"])
 
                                     # Tool result payloads often wrap the JSON you care about
                                     if "toolResult" in item and isinstance(item["toolResult"], dict):
@@ -283,12 +283,12 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                                             tr_texts = [seg.get("text", "") for seg in tr_content if isinstance(seg, dict) and "text" in seg]
                                             combined = "\n".join([t for t in tr_texts if t])
                                             if combined:
-                                                try_parse_and_emit_from_text(combined)
+                                                await try_parse_and_emit_from_text(combined)
 
                             # Forward a simplified message (optional)
                             safe_text = "\n".join(pretty_text_parts).strip()
                             if safe_text:
-                                _send_websocket_message(connection_id, {
+                                await _send_websocket_message(connection_id, {
                                     "type": "message",
                                     "role": message.get("role", "unknown"),
                                     "content": safe_text,
@@ -297,7 +297,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                                 continue  # we've sent a cleaned message; skip sending raw below
 
                         # Fall back: forward raw message content (as before)
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
                             "content": message_content,
@@ -316,7 +316,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                                 citations_buffer = parsed_cites
                                 citation_map_buffer = {str(c["id"]): c for c in parsed_cites if isinstance(c, dict) and "id" in c}
 
-                        _send_websocket_message(connection_id, {
+                        await _send_websocket_message(connection_id, {
                             "type": "result",
                             "content": final_content,
                             "agent": stream_event.get("agent", "unknown"),
@@ -329,7 +329,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                 elif stream_event.get("type") == "error":
                     # Error event
                     logger.error(f"Received error event: {stream_event.get('error')}")
-                    _send_websocket_message(connection_id, {
+                    await _send_websocket_message(connection_id, {
                         "type": "error",
                         "error": stream_event.get("error", "Unknown error"),
                         "timestamp": current_time
@@ -340,7 +340,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
             logger.info(f"Streaming completed after {event_count} events in {total_time:.2f} seconds")
             
             # Send completion status
-            _send_websocket_message(connection_id, {
+            await _send_websocket_message(connection_id, {
                 "type": "status",
                 "message": "Query completed successfully",
                 "timestamp": time.time()
@@ -351,7 +351,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
             logger.error(f"Error type: {type(e)}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            _send_websocket_message(connection_id, {
+            await _send_websocket_message(connection_id, {
                 "type": "error",
                 "error": f"Agent execution failed: {str(e)}",
                 "timestamp": time.time()
@@ -362,7 +362,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
         logger.error(f"Error type: {type(e)}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        _send_websocket_message(connection_id, {
+        await _send_websocket_message(connection_id, {
             "type": "error",
             "error": f"SQS message processing failed: {str(e)}",
             "timestamp": time.time()
