@@ -103,22 +103,40 @@ def _extract_tool_json_and_citations(text: str):
     except Exception:
         return None, None
 
-def _send_websocket_message(connection_id: str, message: dict, domain: str, stage: str) -> bool:
-    """Send a message to a WebSocket connection via API Gateway Management API"""
+from botocore.config import Config
+
+_WS_CLIENTS = {}  # key: base_url -> boto3 client
+_BOTO_CFG = Config(
+    max_pool_connections=50,
+    retries={"max_attempts": 3, "mode": "standard"},
+    connect_timeout=2,
+    read_timeout=5,
+)
+
+def _get_ws_client(domain: str, stage: str):
+    base_url = f"https://{domain}/{stage}"
+    cli = _WS_CLIENTS.get(base_url)
+    if cli is None:
+        cli = boto3.client("apigatewaymanagementapi", endpoint_url=base_url, config=_BOTO_CFG)
+        _WS_CLIENTS[base_url] = cli
+    return cli
+
+async def _send_websocket_message(connection_id: str, message: dict, domain: str, stage: str) -> bool:
+    api = _get_ws_client(domain, stage)
+    payload = json.dumps(message).encode("utf-8")
     try:
-        api_gateway_management_api = boto3.client(
-            'apigatewaymanagementapi',
-            endpoint_url=f"https://{domain}/{stage}"
-        )
-        
-        api_gateway_management_api.post_to_connection(
-            ConnectionId=connection_id,
-            Data=json.dumps(message)
-        )
+        # run the blocking boto3 call in a thread so streaming stays snappy
+        await asyncio.to_thread(api.post_to_connection, ConnectionId=connection_id, Data=payload)
         return True
-    except Exception as e:
-        logger.error(f"Failed to send WebSocket message to {connection_id}: {e}")
+    except api.exceptions.GoneException:
+        logger.info(f"WS connection {connection_id} is gone (410).")
         return False
+    except Exception as e:
+        logger.error(f"WS send failed: {e}")
+        # if endpoint rotated or client went bad, drop from cache so next call recreates it
+        _WS_CLIENTS.pop(f"https://{domain}/{stage}", None)
+        return False
+
 
 async def _process_sqs_message_and_stream_response(connection_id: str, query: str, context: str, query_type: str, 
                                                   domain: str, stage: str) -> None:
