@@ -144,7 +144,12 @@ in_json_fence = False
 json_buf = []
 citations_emitted = False
 
-async def _filter_stream_and_emit_citations(text: str) -> str:
+async def _filter_stream_and_emit_citations(
+    text: str,
+    conn_id: str,
+    dom: str,
+    stg: str,
+) -> str:
     """
     Remove any ```json ... ``` blocks from streaming text.
     If a block is found, parse it once and emit a 'citations' frame.
@@ -176,11 +181,11 @@ async def _filter_stream_and_emit_citations(text: str) -> str:
             if not citations_emitted:
                 parsed_obj, citations = _extract_tool_json_and_citations(block)
                 if citations:
-                    await _send_websocket_message(connection_id, {
+                    await _send_websocket_message(conn_id, {
                         "type": "citations",
                         "citations": citations,
                         "timestamp": time.time()
-                    }, domain, stage)
+                    }, dom, stg)
                     citations_buffer = citations
                     citation_map_buffer = {
                         str(c["id"]): c
@@ -194,7 +199,13 @@ async def _filter_stream_and_emit_citations(text: str) -> str:
             i = end + 3  # skip closing fence
     return "".join(out)
 
-async def _strip_and_emit_from_block(txt: str) -> str:
+
+async def _strip_and_emit_from_block(
+    txt: str,
+    conn_id: str,
+    dom: str,
+    stg: str,
+) -> str:
     """
     For non-streamed full messages: emit citations from any fenced block(s),
     then return the text with ALL fenced blocks removed.
@@ -204,11 +215,11 @@ async def _strip_and_emit_from_block(txt: str) -> str:
         if not citations_emitted:
             parsed_obj, citations = _extract_tool_json_and_citations(m.group(1))
             if citations:
-                await _send_websocket_message(connection_id, {
+                await _send_websocket_message(conn_id, {
                     "type": "citations",
                     "citations": citations,
                     "timestamp": time.time()
-                }, domain, stage)
+                }, dom, stg)
     # Remove every fenced json block from visible text
     cleaned = re.sub(r"```json[\s\S]*?```", "", txt, flags=re.DOTALL | re.IGNORECASE)
     return cleaned.strip()
@@ -264,7 +275,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                     # Handle different types of Strands events
                     if "data" in event:
                         # Text generation event - stream text to client (hide fenced JSON)
-                        safe = await _filter_stream_and_emit_citations(event["data"])
+                        safe = await _filter_stream_and_emit_citations(event["data"], connection_id, domain, stage)
                         if safe:
                             logger.info(f"Sending text chunk: {len(safe)} characters (after filtering)")
                             await _send_websocket_message(connection_id, {
@@ -315,7 +326,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                             message_content = message['content']
 
                         if isinstance(message_content, str) and message_content:
-                            safe = await _strip_and_emit_from_block(message_content)
+                            safe = await _filter_stream_and_emit_citations(message_content, connection_id, domain, stage)
                             if safe:
                                 await _send_websocket_message(connection_id, {
                                     "type": "message",
@@ -329,19 +340,19 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                             pretty_text_parts = []
                             for item in message_content:
                                 if isinstance(item, dict):
-                                    # Plain text parts
                                     if "text" in item and isinstance(item["text"], str):
-                                        pretty_text_parts.append(await _strip_and_emit_from_block(item["text"]))
-
-                                    # Tool result payloads sometimes wrap text
+                                        pretty_text_parts.append(
+                                            await _strip_and_emit_from_block(item["text"], connection_id, domain, stage)
+                                        )
                                     if "toolResult" in item and isinstance(item["toolResult"], dict):
                                         tr = item["toolResult"]
                                         tr_content = tr.get("content")
                                         if isinstance(tr_content, list):
                                             tr_texts = [seg.get("text", "") for seg in tr_content if isinstance(seg, dict) and "text" in seg]
                                             if tr_texts:
-                                                pretty_text_parts.append(await _strip_and_emit_from_block("\n".join(tr_texts)))
-
+                                                pretty_text_parts.append(
+                                                    await _strip_and_emit_from_block("\n".join(tr_texts), connection_id, domain, stage)
+                                                )
                             safe_text = "\n".join([t for t in pretty_text_parts if t]).strip()
                             if safe_text:
                                 await _send_websocket_message(connection_id, {
