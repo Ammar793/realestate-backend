@@ -77,7 +77,8 @@ class StrandsAgentOrchestrator:
         bedrock_model = BedrockModel(
             inference_profile_id="anthropic.claude-3-5-sonnet-20241022-v1:0",
             temperature=0.7,
-            streaming=False,
+            streaming=True,
+            max_tokens=1200,
         )
         logger.info("Bedrock model created successfully")
         
