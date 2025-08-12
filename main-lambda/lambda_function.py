@@ -137,6 +137,81 @@ async def _send_websocket_message(connection_id: str, message: dict, domain: str
         _WS_CLIENTS.pop(f"https://{domain}/{stage}", None)
         return False
 
+import re
+
+    # --- state for hiding fenced JSON while we stream ---
+    in_json_fence = False
+    json_buf = []
+    citations_emitted = False
+
+    async def _filter_stream_and_emit_citations(text: str) -> str:
+        """
+        Remove any ```json ... ``` blocks from streaming text.
+        If a block is found, parse it once and emit a 'citations' frame.
+        Returns the user-visible text with the fenced JSON removed.
+        """
+        nonlocal in_json_fence, json_buf, citations_emitted, citations_buffer, citation_map_buffer
+
+        out = []
+        i = 0
+        while i < len(text):
+            if not in_json_fence:
+                start = text.find("```json", i)
+                if start == -1:
+                    out.append(text[i:])
+                    break
+                out.append(text[i:start])
+                i = start + len("```json")
+                in_json_fence = True
+                json_buf = []
+            else:
+                end = text.find("```", i)
+                if end == -1:
+                    json_buf.append(text[i:])
+                    break
+                json_buf.append(text[i:end])
+                block = "".join(json_buf).strip()
+
+                # parse & emit citations once
+                if not citations_emitted:
+                    parsed_obj, citations = _extract_tool_json_and_citations(block)
+                    if citations:
+                        await _send_websocket_message(connection_id, {
+                            "type": "citations",
+                            "citations": citations,
+                            "timestamp": time.time()
+                        }, domain, stage)
+                        citations_buffer = citations
+                        citation_map_buffer = {
+                            str(c["id"]): c
+                            for c in citations
+                            if isinstance(c, dict) and "id" in c
+                        }
+                        citations_emitted = True
+
+                in_json_fence = False
+                json_buf = []
+                i = end + 3  # skip closing fence
+        return "".join(out)
+
+    async def _strip_and_emit_from_block(txt: str) -> str:
+        """
+        For non-streamed full messages: emit citations from any fenced block(s),
+        then return the text with ALL fenced blocks removed.
+        """
+        # Emit citations (first match is enough)
+        for m in re.finditer(r"```json\s*(\{[\s\S]*?\})\s*```", txt, flags=re.DOTALL | re.IGNORECASE):
+            if not citations_emitted:
+                parsed_obj, citations = _extract_tool_json_and_citations(m.group(1))
+                if citations:
+                    await _send_websocket_message(connection_id, {
+                        "type": "citations",
+                        "citations": citations,
+                        "timestamp": time.time()
+                    }, domain, stage)
+        # Remove every fenced json block from visible text
+        cleaned = re.sub(r"```json[\s\S]*?```", "", txt, flags=re.DOTALL | re.IGNORECASE)
+        return cleaned.strip()
 
 async def _process_sqs_message_and_stream_response(connection_id: str, query: str, context: str, query_type: str, 
                                                   domain: str, stage: str) -> None:
@@ -188,13 +263,15 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                     
                     # Handle different types of Strands events
                     if "data" in event:
-                        # Text generation event - stream text to client
-                        logger.info(f"Sending text chunk: {len(event['data'])} characters")
-                        await _send_websocket_message(connection_id, {
-                            "type": "text_chunk",
-                            "data": event["data"],
-                            "timestamp": current_time
-                        }, domain, stage)
+                        # Text generation event - stream text to client (hide fenced JSON)
+                        safe = await _filter_stream_and_emit_citations(event["data"])
+                        if safe:
+                            logger.info(f"Sending text chunk: {len(safe)} characters (after filtering)")
+                            await _send_websocket_message(connection_id, {
+                                "type": "text_chunk",
+                                "data": safe,
+                                "timestamp": current_time
+                            }, domain, stage)
                         
                     elif "current_tool_use" in event:
                         # Tool usage event
@@ -237,56 +314,35 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                         elif isinstance(message, dict) and 'content' in message:
                             message_content = message['content']
 
-                        async def try_parse_and_emit_from_text(txt: str):
-                            nonlocal citations_buffer, citation_map_buffer
-                            parsed_obj, citations = _extract_tool_json_and_citations(txt)
-                            if citations:
-                                logger.info(f"Detected citations in agent message: {len(citations)} items")
-                                # If tool provided a clean 'answer', stream that instead of raw JSON
-                                if isinstance(parsed_obj, dict) and 'answer' in parsed_obj:
-                                    await _send_websocket_message(connection_id, {
-                                        "type": "text_chunk",
-                                        "data": parsed_obj.get("answer", ""),
-                                        "timestamp": current_time
-                                    }, domain, stage)
-                                # Emit citations frame
+                        if isinstance(message_content, str) and message_content:
+                            safe = await _strip_and_emit_from_block(message_content)
+                            if safe:
                                 await _send_websocket_message(connection_id, {
-                                    "type": "citations",
-                                    "citations": citations,
+                                    "type": "message",
+                                    "role": message.get("role", "unknown"),
+                                    "content": safe,
                                     "timestamp": current_time
                                 }, domain, stage)
-                                # cache for final 'result'
-                                citations_buffer = citations
-                                citation_map_buffer = {str(c["id"]): c for c in citations if isinstance(c, dict) and "id" in c}
+                            continue
 
-                        # 1) If it's a simple string, try to parse
-                        if isinstance(message_content, str) and message_content:
-                            await try_parse_and_emit_from_text(message_content)
-
-                        # 2) If it's an array (Anthropic style), walk items
                         elif isinstance(message_content, list):
-                            # Send a friendly string version to UI
                             pretty_text_parts = []
                             for item in message_content:
                                 if isinstance(item, dict):
-                                    # Plain text chunks
+                                    # Plain text parts
                                     if "text" in item and isinstance(item["text"], str):
-                                        pretty_text_parts.append(item["text"])
-                                        await try_parse_and_emit_from_text(item["text"])
+                                        pretty_text_parts.append(await _strip_and_emit_from_block(item["text"]))
 
-                                    # Tool result payloads often wrap the JSON you care about
+                                    # Tool result payloads sometimes wrap text
                                     if "toolResult" in item and isinstance(item["toolResult"], dict):
                                         tr = item["toolResult"]
                                         tr_content = tr.get("content")
                                         if isinstance(tr_content, list):
-                                            # concatenate any text segments inside toolResult
                                             tr_texts = [seg.get("text", "") for seg in tr_content if isinstance(seg, dict) and "text" in seg]
-                                            combined = "\n".join([t for t in tr_texts if t])
-                                            if combined:
-                                                await try_parse_and_emit_from_text(combined)
+                                            if tr_texts:
+                                                pretty_text_parts.append(await _strip_and_emit_from_block("\n".join(tr_texts)))
 
-                            # Forward a simplified message (optional)
-                            safe_text = "\n".join(pretty_text_parts).strip()
+                            safe_text = "\n".join([t for t in pretty_text_parts if t]).strip()
                             if safe_text:
                                 await _send_websocket_message(connection_id, {
                                     "type": "message",
@@ -294,9 +350,9 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
                                     "content": safe_text,
                                     "timestamp": current_time
                                 }, domain, stage)
-                                continue  # we've sent a cleaned message; skip sending raw below
+                            continue
 
-                        # Fall back: forward raw message content (as before)
+                        # Fall back: forward raw (non-string/non-list) content as-is
                         await _send_websocket_message(connection_id, {
                             "type": "message",
                             "role": message.get("role", "unknown"),
