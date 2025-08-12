@@ -139,79 +139,79 @@ async def _send_websocket_message(connection_id: str, message: dict, domain: str
 
 import re
 
-    # --- state for hiding fenced JSON while we stream ---
-    in_json_fence = False
-    json_buf = []
-    citations_emitted = False
+# --- state for hiding fenced JSON while we stream ---
+in_json_fence = False
+json_buf = []
+citations_emitted = False
 
-    async def _filter_stream_and_emit_citations(text: str) -> str:
-        """
-        Remove any ```json ... ``` blocks from streaming text.
-        If a block is found, parse it once and emit a 'citations' frame.
-        Returns the user-visible text with the fenced JSON removed.
-        """
-        nonlocal in_json_fence, json_buf, citations_emitted, citations_buffer, citation_map_buffer
+async def _filter_stream_and_emit_citations(text: str) -> str:
+    """
+    Remove any ```json ... ``` blocks from streaming text.
+    If a block is found, parse it once and emit a 'citations' frame.
+    Returns the user-visible text with the fenced JSON removed.
+    """
+    nonlocal in_json_fence, json_buf, citations_emitted, citations_buffer, citation_map_buffer
 
-        out = []
-        i = 0
-        while i < len(text):
-            if not in_json_fence:
-                start = text.find("```json", i)
-                if start == -1:
-                    out.append(text[i:])
-                    break
-                out.append(text[i:start])
-                i = start + len("```json")
-                in_json_fence = True
-                json_buf = []
-            else:
-                end = text.find("```", i)
-                if end == -1:
-                    json_buf.append(text[i:])
-                    break
-                json_buf.append(text[i:end])
-                block = "".join(json_buf).strip()
+    out = []
+    i = 0
+    while i < len(text):
+        if not in_json_fence:
+            start = text.find("```json", i)
+            if start == -1:
+                out.append(text[i:])
+                break
+            out.append(text[i:start])
+            i = start + len("```json")
+            in_json_fence = True
+            json_buf = []
+        else:
+            end = text.find("```", i)
+            if end == -1:
+                json_buf.append(text[i:])
+                break
+            json_buf.append(text[i:end])
+            block = "".join(json_buf).strip()
 
-                # parse & emit citations once
-                if not citations_emitted:
-                    parsed_obj, citations = _extract_tool_json_and_citations(block)
-                    if citations:
-                        await _send_websocket_message(connection_id, {
-                            "type": "citations",
-                            "citations": citations,
-                            "timestamp": time.time()
-                        }, domain, stage)
-                        citations_buffer = citations
-                        citation_map_buffer = {
-                            str(c["id"]): c
-                            for c in citations
-                            if isinstance(c, dict) and "id" in c
-                        }
-                        citations_emitted = True
-
-                in_json_fence = False
-                json_buf = []
-                i = end + 3  # skip closing fence
-        return "".join(out)
-
-    async def _strip_and_emit_from_block(txt: str) -> str:
-        """
-        For non-streamed full messages: emit citations from any fenced block(s),
-        then return the text with ALL fenced blocks removed.
-        """
-        # Emit citations (first match is enough)
-        for m in re.finditer(r"```json\s*(\{[\s\S]*?\})\s*```", txt, flags=re.DOTALL | re.IGNORECASE):
+            # parse & emit citations once
             if not citations_emitted:
-                parsed_obj, citations = _extract_tool_json_and_citations(m.group(1))
+                parsed_obj, citations = _extract_tool_json_and_citations(block)
                 if citations:
                     await _send_websocket_message(connection_id, {
                         "type": "citations",
                         "citations": citations,
                         "timestamp": time.time()
                     }, domain, stage)
-        # Remove every fenced json block from visible text
-        cleaned = re.sub(r"```json[\s\S]*?```", "", txt, flags=re.DOTALL | re.IGNORECASE)
-        return cleaned.strip()
+                    citations_buffer = citations
+                    citation_map_buffer = {
+                        str(c["id"]): c
+                        for c in citations
+                        if isinstance(c, dict) and "id" in c
+                    }
+                    citations_emitted = True
+
+            in_json_fence = False
+            json_buf = []
+            i = end + 3  # skip closing fence
+    return "".join(out)
+
+async def _strip_and_emit_from_block(txt: str) -> str:
+    """
+    For non-streamed full messages: emit citations from any fenced block(s),
+    then return the text with ALL fenced blocks removed.
+    """
+    # Emit citations (first match is enough)
+    for m in re.finditer(r"```json\s*(\{[\s\S]*?\})\s*```", txt, flags=re.DOTALL | re.IGNORECASE):
+        if not citations_emitted:
+            parsed_obj, citations = _extract_tool_json_and_citations(m.group(1))
+            if citations:
+                await _send_websocket_message(connection_id, {
+                    "type": "citations",
+                    "citations": citations,
+                    "timestamp": time.time()
+                }, domain, stage)
+    # Remove every fenced json block from visible text
+    cleaned = re.sub(r"```json[\s\S]*?```", "", txt, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
 
 async def _process_sqs_message_and_stream_response(connection_id: str, query: str, context: str, query_type: str, 
                                                   domain: str, stage: str) -> None:
