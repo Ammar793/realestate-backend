@@ -150,7 +150,7 @@ async def _filter_stream_and_emit_citations(text: str) -> str:
     If a block is found, parse it once and emit a 'citations' frame.
     Returns the user-visible text with the fenced JSON removed.
     """
-    nonlocal in_json_fence, json_buf, citations_emitted, citations_buffer, citation_map_buffer
+    global in_json_fence, json_buf, citations_emitted, citations_buffer, citation_map_buffer
 
     out = []
     i = 0
