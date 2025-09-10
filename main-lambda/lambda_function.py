@@ -34,38 +34,70 @@ MODEL_ARN = os.environ["MODEL_ARN"]  # e.g., arn:aws:bedrock:us-west-2::foundati
 
 logger.info(f"Initialized with KB_ID: {KB_ID}, MODEL_ARN: {MODEL_ARN}")
 
-# Initialize agent orchestrator
-_orchestrator = None
+# Session-aware orchestrator management
+_orchestrators = {}  # Dictionary to store orchestrators by connection_id
 
-def _get_orchestrator():
-    """Get or create the Strands agent orchestrator instance - always creates fresh instance"""
-    global _orchestrator
-    # Always create a fresh instance for each request to avoid conversation history persistence
-    print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE ===")
-    logger.info("Creating new Strands agent orchestrator instance")
-    try:
-        _orchestrator = StrandsAgentOrchestrator()
-        print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
-        logger.info("Orchestrator instance created successfully")
-    except Exception as e:
-        print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE: {e} ===")
-        logger.error(f"Failed to create orchestrator instance: {e}")
-        logger.error(f"Error type: {type(e)}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        raise
+def _get_orchestrator(connection_id: str = None):
+    """Get or create the Strands agent orchestrator instance for a specific connection"""
+    global _orchestrators
+    
+    # If no connection_id provided, create a fresh instance (for non-websocket requests)
+    if not connection_id:
+        print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE (NO CONNECTION ID) ===")
+        logger.info("Creating new Strands agent orchestrator instance (no connection ID)")
+        try:
+            orchestrator = StrandsAgentOrchestrator()
+            print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
+            logger.info("Orchestrator instance created successfully")
+            return orchestrator
+        except Exception as e:
+            print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE: {e} ===")
+            logger.error(f"Failed to create orchestrator instance: {e}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
+    
+    # For websocket requests, use connection_id to maintain session state
+    if connection_id not in _orchestrators:
+        print(f"=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE FOR CONNECTION {connection_id} ===")
+        logger.info(f"Creating new Strands agent orchestrator instance for connection {connection_id}")
+        try:
+            _orchestrators[connection_id] = StrandsAgentOrchestrator()
+            print(f"=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY FOR CONNECTION {connection_id} ===")
+            logger.info(f"Orchestrator instance created successfully for connection {connection_id}")
+        except Exception as e:
+            print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE FOR CONNECTION {connection_id}: {e} ===")
+            logger.error(f"Failed to create orchestrator instance for connection {connection_id}: {e}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            raise
+    else:
+        print(f"=== REUSING EXISTING ORCHESTRATOR INSTANCE FOR CONNECTION {connection_id} ===")
+        logger.debug(f"Reusing existing Strands agent orchestrator instance for connection {connection_id}")
+    
+    orchestrator = _orchestrators[connection_id]
     
     # Validate the orchestrator is working
     try:
-        status = _orchestrator.get_system_status()
-        logger.info(f"Orchestrator status: {status}")
+        status = orchestrator.get_system_status()
+        logger.info(f"Orchestrator status for connection {connection_id}: {status}")
     except Exception as e:
-        logger.error(f"Orchestrator validation failed: {e}")
+        logger.error(f"Orchestrator validation failed for connection {connection_id}: {e}")
         # Reset the orchestrator if it's not working
-        _orchestrator = None
-        raise Exception(f"Orchestrator validation failed: {e}")
+        del _orchestrators[connection_id]
+        raise Exception(f"Orchestrator validation failed for connection {connection_id}: {e}")
     
-    return _orchestrator
+    return orchestrator
+
+def _cleanup_orchestrator(connection_id: str):
+    """Clean up orchestrator instance when connection is closed"""
+    global _orchestrators
+    if connection_id in _orchestrators:
+        print(f"=== CLEANING UP ORCHESTRATOR FOR CONNECTION {connection_id} ===")
+        logger.info(f"Cleaning up orchestrator for connection {connection_id}")
+        del _orchestrators[connection_id]
 
 def _cors_headers():
     return {
@@ -127,6 +159,8 @@ async def _send_websocket_message(connection_id: str, message: dict, domain: str
         return True
     except api.exceptions.GoneException:
         logger.info(f"WS connection {connection_id} is gone (410).")
+        # Clean up orchestrator for this connection
+        _cleanup_orchestrator(connection_id)
         return False
     except Exception as e:
         logger.error(f"WS send failed: {e}")
@@ -240,7 +274,7 @@ async def _process_sqs_message_and_stream_response(connection_id: str, query: st
         # Execute the query with native Strands streaming
         try:
             logger.info("Getting orchestrator instance for streaming")
-            orchestrator = _get_orchestrator()
+            orchestrator = _get_orchestrator(connection_id)  # Pass connection_id for session awareness
             logger.info("Orchestrator retrieved, starting route_query")
             
             # Use native Strands streaming
