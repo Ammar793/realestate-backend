@@ -38,25 +38,22 @@ logger.info(f"Initialized with KB_ID: {KB_ID}, MODEL_ARN: {MODEL_ARN}")
 _orchestrator = None
 
 def _get_orchestrator():
-    """Get or create the Strands agent orchestrator instance"""
+    """Get or create the Strands agent orchestrator instance - always creates fresh instance"""
     global _orchestrator
-    if _orchestrator is None:
-        print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE ===")
-        logger.info("Creating new Strands agent orchestrator instance")
-        try:
-            _orchestrator = StrandsAgentOrchestrator()
-            print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
-            logger.info("Orchestrator instance created successfully")
-        except Exception as e:
-            print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE: {e} ===")
-            logger.error(f"Failed to create orchestrator instance: {e}")
-            logger.error(f"Error type: {type(e)}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise
-    else:
-        print("=== REUSING EXISTING ORCHESTRATOR INSTANCE ===")
-        logger.debug("Reusing existing Strands agent orchestrator instance")
+    # Always create a fresh instance for each request to avoid conversation history persistence
+    print("=== CREATING NEW STRANDS ORCHESTRATOR INSTANCE ===")
+    logger.info("Creating new Strands agent orchestrator instance")
+    try:
+        _orchestrator = StrandsAgentOrchestrator()
+        print("=== ORCHESTRATOR INSTANCE CREATED SUCCESSFULLY ===")
+        logger.info("Orchestrator instance created successfully")
+    except Exception as e:
+        print(f"=== FAILED TO CREATE ORCHESTRATOR INSTANCE: {e} ===")
+        logger.error(f"Failed to create orchestrator instance: {e}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise
     
     # Validate the orchestrator is working
     try:
